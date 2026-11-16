@@ -5,5 +5,6 @@ public class ItemInfoWithIcon extends ItemInfo {
             FLAG_DISABLED_QUIET_USER = 4, FLAG_DISABLED_MASK = 255;
     public int runtimeStatusFlags;
     public Object bitmap = new Object();
+    public boolean isArchived() { return false; }
     public CharSequence title = "Saved label";
 }

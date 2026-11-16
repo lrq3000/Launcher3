@@ -43,6 +43,7 @@ import org.mockito.kotlin.mock
 import org.mockito.kotlin.reset
 import org.mockito.kotlin.spy
 import org.mockito.kotlin.verify
+import org.mockito.kotlin.never
 import org.mockito.kotlin.whenever
 
 @RunWith(AndroidJUnit4::class)
@@ -96,6 +97,43 @@ class ModelWriterTest : AbstractWorkspaceModelTest() {
 
     private fun addToModel(vararg items: ItemInfo) {
         modelWriter.scheduleTransaction { it.addItemsToDatabase(items.toList()) }
+    }
+
+    @Test
+    @DisableFlags(Flags.FLAG_ENABLE_TRANSACTIONAL_MODEL_WRITER)
+    fun legacyAddWithUnwritableBirthJournalDoesNotCrashPublishOrAlterExistingFavorites() {
+        addToModel(item1)
+        reset(mockNotifier)
+        val db = mTargetContext.appComponent.testableModelState.dbController
+        val blocked = java.io.File(mTargetContext.noBackupFilesDir, "workspace-availability-v1.new")
+        assertThat(blocked.mkdir()).isTrue()
+        modelWriter.addItemsToDatabase(listOf(item2))
+        assertThat(bgDataModel.itemsIdMap[item1.id]).isSameInstanceAs(item1)
+        assertThat(bgDataModel.itemsIdMap[item2.id]).isNull()
+        assertThat(db.query(null, null, null, null).use { it.count }).isEqualTo(1)
+        verify(mockNotifier, never()).notifyModelChanged(any(), any())
+        assertThat(blocked.renameTo(java.io.File(mTargetContext.noBackupFilesDir, "retained-writer-blocker"))).isTrue()
+        modelWriter.addItemsToDatabase(listOf(item2))
+        assertThat(db.query(null, null, null, null).use { it.count }).isEqualTo(2)
+        assertThat(bgDataModel.itemsIdMap[item2.id]).isSameInstanceAs(item2)
+    }
+
+    @Test
+    fun laterBirthFailureRollsBackEarlierOperationsWithoutModelOrChangeLogPublication() {
+        val db = mTargetContext.appComponent.testableModelState.dbController
+        val before = db.query(null, null, null, null).use { it.count }
+        val blocked = java.io.File(mTargetContext.noBackupFilesDir, "workspace-availability-v1.new")
+        var completed: Boolean? = null
+        modelWriter.scheduleTransaction(onComplete = { success, _ -> completed = success }) {
+            it.addItemToDatabase(item1)
+            assertThat(blocked.mkdir()).isTrue()
+            it.addItemToDatabase(item2)
+        }
+        assertThat(completed).isFalse()
+        assertThat(bgDataModel.itemsIdMap[item1.id]).isNull()
+        assertThat(bgDataModel.itemsIdMap[item2.id]).isNull()
+        assertThat(db.query(null, null, null, null).use { it.count }).isEqualTo(before)
+        verify(mockNotifier, never()).notifyModelChanged(any(), any())
     }
 
     @Test

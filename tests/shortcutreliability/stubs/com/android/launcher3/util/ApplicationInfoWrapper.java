@@ -5,4 +5,5 @@ import android.os.UserHandle;
 public class ApplicationInfoWrapper {
     public ApplicationInfoWrapper(Context context, String name, UserHandle user) {}
     public boolean isOnSdCard() { return false; }
+    public boolean isSystem() { return false; }
 }

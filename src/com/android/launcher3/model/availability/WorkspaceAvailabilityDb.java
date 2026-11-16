@@ -74,7 +74,11 @@ public final class WorkspaceAvailabilityDb {
         try (WorkspaceAvailabilityStore.Operation ignored = store.beginOperation()) {
             db.beginTransaction();
             try {
-                String birth = historicalBirth == null ? store.nextInsertionGeneration() : historicalBirth;
+                Integer itemType = values.getAsInteger(Favorites.ITEM_TYPE);
+                // Widgets, folders and deep shortcuts keep their specialized policies. Only application rows (including application placeholders that can become ordinary favorites) need an ordered birth reservation. A missing itemType uses the favorites default: application.
+                boolean application = itemType == null || itemType == Favorites.ITEM_TYPE_APPLICATION;
+                String birth = historicalBirth != null ? historicalBirth
+                        : application ? store.nextInsertionGeneration() : "";
                 long result = db.insertWithOnConflict(table, null, values, conflict);
                 if (result >= 0) {
                     ensureBirths(db, table);

@@ -13,6 +13,18 @@ Run `python tests/shortcutreliability/run_tests.py --baseline-receiver` to repro
 - `AppInfo` is a boundary double reproducing the documented clearing of suspension in its runtime-flag refresh, so the real update task's independent-state preservation is exercised. The in-memory model applies predicates and retains objects, but does not implement production SQLite transactions, repository publication, loader scheduling, or UI binding.
 - The installed Kotlin parser checks edited Kotlin syntax separately. This is not full AOSP type checking.
 - The new SQLite birth helper is separately compiled against the actual Android 35 SDK jar and production journal, with only LauncherSettings constants supplied by a fixture. This catches API/type mistakes in that Java helper, not SQLite transaction/runtime behavior.
+- The default command now also invokes `run_writer_tests.py`. This compiles and executes the REAL ModelWriter/IModelWriter, WorkspaceAvailabilityDb/Store, AddWorkspaceItemsTask and ItemInstallQueue. The `writer/stubs` override only explicit dependencies of those consumers and reuse common fixtures otherwise. Nested SQL transaction/commit behavior, Android/model publication, queue serialization, and thread executors are boundaries, not production implementations. Journal failures and repair use real filesystem operations. The queue fixture uses a simple real file, not Android XML/AtomicFile.
+
+## Insertion consumer failure regression
+
+Run `python tests/shortcutreliability/run_writer_tests.py` for the writer/queue subset. It checks handled legacy identity failure, unchanged valid favorites, repair/retry, rollback of separate adds in one transaction, negative insertion result, transaction-close failure, specialized writes without journal persistence, no failed success binding, retained queue file across a new queue instance, success-only retirement, stale main-thread batch suppression, and unloaded-task retry. These tests exercise actual consumers rather than merely asserting that low-level reservation throws. Native SQLite, real Looper lifetime, UI rollback and Android queue serialization still require canonical execution.
+
+Historical RED replays, each expected to exit 1:
+
+- `python tests/shortcutreliability/run_writer_tests.py --baseline-consumer --case writer` extracts the exact reviewed 0552 writer/helper/queue/task sources to temporary storage and reproduces the exception escaping the legacy writer.
+- `python tests/shortcutreliability/run_writer_tests.py --baseline-queue --case queue` extracts only the old queue/task sources, keeping the corrected writer, and reproduces success binding of a nonexistent favorite. This proves why handling the exception or returning a negative value alone is insufficient.
+
+Replays never reset/edit the worktree. Generated writer classes, baseline copies, queue files and retained failure blockers remain under `%LOCALAPPDATA%/Temp/opencode/launcher3-writer-tests-*` for manual cleanup.
 
 ## Review-case boundaries
 
@@ -25,6 +37,8 @@ Run `python tests/shortcutreliability/run_tests.py --baseline-receiver` to repro
 
 ## What this cannot establish
 
-These are narrow executable policy/task-boundary tests, not platform, UI, device, emulator, Android SQLite integration, or end-to-end validation. Full loader, favorites appearance serialization, database identity/reset/insertion/copy atomicity, native concurrency, lifecycle/retry scheduling, actual callback/volume semantics, and both binding implementations require the canonical AOSP tests and a platform build. The 14 added `tests/multivalentTests` regressions are included by `launcher-tests-src` and cover real SQLite/loader/cache behavior, but have not been run in the standalone Windows checkout. No full AOSP application type-check/build claim follows from the limited SDK API compilation.
+These are narrow executable policy/task-boundary tests, not platform, UI, device, emulator, Android SQLite integration, or end-to-end validation. Full loader, favorites appearance serialization, database identity/reset/insertion/copy atomicity, native concurrency, model-writer/queue lifecycle and failure handling, actual callback/volume semantics, and both binding implementations require the canonical AOSP tests and a platform build. The 18 added `tests/multivalentTests` regressions are included by `launcher-tests-src` and cover real SQLite/loader/cache/writer/queue behavior, but have not been run in the standalone Windows checkout. No full AOSP application type-check/build claim follows from the limited SDK API compilation.
+
+Legacy failed manual additions are logged and reloaded, not durably retried; queue failures retry on a later queue/resume event rather than a timer. A crash between favorite commit and queue retirement remains an exactly-once validation limit, particularly for specialized item types. This is not a generic undo framework for arbitrary caller-owned item mutations or widget-host side effects.
 
 Fixture Java classes intentionally expose only the boundaries used by the selected production sources. Do not ship these fixtures in launcher source sets, or broaden their passing results into a full-launcher build claim.

@@ -56,4 +56,6 @@ changed = subprocess.check_output(["git", "diff", "--name-only", "c612e6ece389f2
 untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard"], cwd=ROOT, text=True).splitlines()
 syntax = sorted({str(ROOT / name) for name in changed + untracked if name.endswith(".kt")})
 subprocess.run([str(JAVA_HOME / "bin/java"), "-cp", compiler_cp, "KotlinSyntaxCheck", *syntax], check=True)
+if "--finding" not in sys.argv:
+    subprocess.run([sys.executable, str(HERE / "run_writer_tests.py")], check=True)
 print(f"Generated classes and test stores retained at {OUT}")

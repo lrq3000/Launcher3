@@ -83,6 +83,7 @@ public class ItemInstallQueue {
 
     // Only accessed on worker thread
     private List<SerializedItemItem> mItems;
+    private boolean mFlushInFlight;
 
     private WeakReference<ActivityContext> mIconUISurface = new WeakReference<>(null);
 
@@ -132,8 +133,7 @@ public class ItemInstallQueue {
         ensureQueueLoaded();
         if (mItems.isEmpty()) return;
 
-        List<Supplier<ItemInfo>> itemSuppliers = new ArrayList<>();
-        mItems.forEach(it -> itemSuppliers.add(() -> mPendingItemParser.decode(it)));
+        List<SerializedItemItem> batch = new ArrayList<>(mItems);
         MAIN_EXECUTOR.execute(() -> {
             ActivityContext uiSurface = mIconUISurface.get();
             // Launcher not loaded
@@ -148,10 +148,29 @@ public class ItemInstallQueue {
             AbstractFloatingView.closeOpenViews(uiSurface, true, TYPE_SNACKBAR);
 
             MODEL_EXECUTOR.execute(() -> {
-                mItems.clear();
-                mStorage.getFile(mContext).delete();
                 mModelProvider.get().enqueueModelUpdateTask(
-                        new AddWorkspaceItemsTask(itemSuppliers, mSpaceFinderProvider.get()));
+                        (controller, data, apps) -> {
+                            // Set this only inside an executed model task: unloaded-model task discard must not leave the retained queue permanently marked in flight.
+                            if (mFlushInFlight) return;
+                            // Multiple UI hops may carry the same snapshot. A prior successful commit may already have retired it, including specialized items without package-based deduplication.
+                            List<SerializedItemItem> pendingBatch = batch.stream()
+                                    .filter(mItems::contains).toList();
+                            if (pendingBatch.isEmpty()) return;
+                            List<Supplier<ItemInfo>> itemSuppliers = new ArrayList<>();
+                            pendingBatch.forEach(it -> itemSuppliers.add(
+                                    () -> mPendingItemParser.decode(it)));
+                            mFlushInFlight = true;
+                            new AddWorkspaceItemsTask(itemSuppliers, mSpaceFinderProvider.get(),
+                                    success -> MODEL_EXECUTOR.execute(() -> {
+                                        mFlushInFlight = false;
+                                        if (success) {
+                                            mItems.removeAll(pendingBatch);
+                                            mStorage.write(mContext, mItems);
+                                            if (!mItems.isEmpty()) flushInstallQueue();
+                                        }
+                                        // On failure leave the durable request intact. A later queue/resume event retries; do not spin on unwritable storage.
+                                    })).execute(controller, data, apps);
+                        });
             });
         });
     }

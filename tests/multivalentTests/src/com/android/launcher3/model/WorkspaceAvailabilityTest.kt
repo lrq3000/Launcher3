@@ -42,6 +42,24 @@ class WorkspaceAvailabilityTest {
     @get:Rule val context = SandboxApplication().withModelDependency()
 
     @Test
+    fun specializedNonApplicationInsertsDoNotRequireWritableApplicationJournal() {
+        TestUtil.runOnExecutorSync(MODEL_EXECUTOR) {
+            val db = context.appComponent.testableModelState.dbController
+            db.createEmptyDB()
+            val blocked = java.io.File(context.noBackupFilesDir, "workspace-availability-v1.new")
+            assertThat(blocked.mkdir()).isTrue()
+            for (type in listOf(Favorites.ITEM_TYPE_FOLDER, Favorites.ITEM_TYPE_APPWIDGET, Favorites.ITEM_TYPE_DEEP_SHORTCUT)) {
+                val id = db.generateNewItemId()
+                assertThat(db.insert(ContentValues().apply {
+                    put(Favorites._ID, id)
+                    put(Favorites.ITEM_TYPE, type)
+                })).isEqualTo(id)
+            }
+            assertThat(db.query(null, null, null, null).use { it.count }).isEqualTo(3)
+        }
+    }
+
+    @Test
     fun deletedHighestIdCanBeReusedAfterReopenWithoutInheritingUninstall() {
         TestUtil.runOnExecutorSync(MODEL_EXECUTOR) {
             val user = Process.myUserHandle()

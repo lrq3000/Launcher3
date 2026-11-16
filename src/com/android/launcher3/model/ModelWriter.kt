@@ -70,30 +70,44 @@ open class ModelWriter(
         private val bgDataModel: BgDataModel,
     ) : TransactionContext {
 
+        // SQL may still fail after an earlier operation in the block succeeded. Do not publish repository/model changes until the outer transaction has actually closed successfully.
+        private val committedModelChanges = mutableListOf<() -> Unit>()
+        private val pendingAdditions = mutableListOf<ItemInfo>()
+
+        internal fun publishCommittedChanges() {
+            committedModelChanges.forEach { it() }
+            committedModelChanges.clear()
+            pendingAdditions.clear()
+        }
+
         override fun addItemToDatabase(item: ItemInfo) {
             this.addItemsToDatabase(listOf(item))
         }
 
         override fun addItemsToDatabase(items: List<ItemInfo>) {
-            items.forEach {
+            val additions = items.toList()
+            additions.forEach {
                 if (it.id == ItemInfo.NO_ID) {
                     it.id = model.modelDbController.generateNewItemId()
                 }
             }
-            outChangeLog.itemsAdded.addAll(items)
             val stackTrace = Throwable().stackTrace
-            for (item in items) {
+            synchronized(bgDataModel) {
+                additions.forEach { checkItemInfoLocked(it.id, it, stackTrace) }
+            }
+            for (item in additions) {
                 val writer = ContentWriter(context)
                 item.onAddToDatabase(writer)
                 writer.put(Favorites._ID, item.id)
-                model.modelDbController.insert(writer.getValues(context))
+                check(model.modelDbController.insert(writer.getValues(context)) == item.id) {
+                    "Favorite insertion failed for item ${item.id}"
+                }
                 if (item is WorkspaceItemInfo) model.workspaceAvailability.row(item)
             }
-            synchronized(bgDataModel) {
-                for (item in items) {
-                    checkItemInfoLocked(item.id, item, stackTrace)
-                }
-                bgDataModel.addItems(context, items, modificationSource)
+            pendingAdditions.addAll(additions)
+            committedModelChanges.add {
+                synchronized(bgDataModel) { bgDataModel.addItems(context, additions, modificationSource) }
+                outChangeLog.itemsAdded.addAll(additions)
             }
         }
 
@@ -123,7 +137,8 @@ open class ModelWriter(
             items.zip(contentValues).forEach { (item, value) ->
                 model.modelDbController.update(value, itemIdMatch(item.id), null)
             }
-            bgDataModel.updateItems(items, modificationSource)
+            val updatedItems = items.toList()
+            committedModelChanges.add { bgDataModel.updateItems(updatedItems, modificationSource) }
         }
 
         override fun modifyItemInDatabase(
@@ -143,7 +158,7 @@ open class ModelWriter(
             val writer = ContentWriter(context)
             item.onAddToDatabase(writer)
             model.modelDbController.update(writer.getValues(context), itemIdMatch(item.id), null)
-            bgDataModel.updateItems(listOf(item), modificationSource)
+            committedModelChanges.add { bgDataModel.updateItems(listOf(item), modificationSource) }
         }
 
         override fun deleteItemsFromDatabase(matcher: Predicate<ItemInfo?>, reason: String?) {
@@ -154,7 +169,8 @@ open class ModelWriter(
             matcher: (ItemInfo) -> Boolean,
             reason: String?,
         ) {
-            val itemsToDelete = bgDataModel.itemsIdMap.filter(matcher)
+            val itemsToDelete = (bgDataModel.itemsIdMap.toList() + pendingAdditions)
+                .distinctBy { it.id }.filter(matcher)
             this.deleteItemsFromDatabase(itemsToDelete, reason)
         }
 
@@ -167,7 +183,8 @@ open class ModelWriter(
             for (item in items) {
                 model.modelDbController.delete(itemIdMatch(item.id), null)
             }
-            bgDataModel.removeItems(context, items, modificationSource)
+            val removedItems = items.toList()
+            committedModelChanges.add { bgDataModel.removeItems(context, removedItems, modificationSource) }
         }
 
         override fun deleteCollectionAndContentsFromDatabase(info: CollectionInfo) {
@@ -175,7 +192,7 @@ open class ModelWriter(
             model.modelDbController.delete(Favorites.CONTAINER + "=" + info.id, null)
             model.modelDbController.delete(Favorites._ID + "=" + info.id, null)
             val itemsToDelete = info.getContents() + info
-            bgDataModel.removeItems(context, itemsToDelete, modificationSource)
+            committedModelChanges.add { bgDataModel.removeItems(context, itemsToDelete, modificationSource) }
         }
 
         override fun deleteWidgetInfo(
@@ -192,7 +209,7 @@ open class ModelWriter(
 
         override fun deleteAllItems() {
             model.modelDbController.createEmptyDB()
-            bgDataModel.clear()
+            committedModelChanges.add { bgDataModel.clear() }
         }
     }
 
@@ -216,17 +233,20 @@ open class ModelWriter(
             var success = false
             var result: T? = null
             val outChangeLog = ChangeLog()
+            val transactionContext = createTransactionContext(outChangeLog)
             try {
                 model.modelDbController.newTransaction().use { t ->
-                    result = block(createTransactionContext(outChangeLog))
+                    result = block(transactionContext)
                     t.commit()
-                    success = true
                 }
+                success = true
             } catch (e: Exception) {
                 Log.e(TAG, "Transaction failed", e)
+                result = null
             }
 
             if (success) {
+                (transactionContext as? TransactionContextImpl)?.publishCommittedChanges()
                 launcherStateNotifier.notifyModelChanged(outChangeLog, this.owner)
             }
             onComplete?.invoke(success, result)
@@ -280,7 +300,7 @@ open class ModelWriter(
         updateItemModel(item, container, screenId, cellX, cellY)
         if (item.id == ItemInfo.NO_ID) {
             item.id = model.modelDbController.generateNewItemId()
-            execute { it.addItemToDatabase(item) }
+            executeAddition { it.addItemToDatabase(item) }
         } else {
             execute { it.moveItemInDatabase(item, container, screenId, cellX, cellY) }
         }
@@ -292,10 +312,19 @@ open class ModelWriter(
         } else {
             modelExecutor.execute {
                 val changeLog = ChangeLog()
-                block(createTransactionContext(changeLog))
+                val transactionContext = createTransactionContext(changeLog)
+                block(transactionContext)
+                (transactionContext as? TransactionContextImpl)?.publishCommittedChanges()
                 launcherStateNotifier.notifyModelChanged(changeLog, this.owner)
             }
         }
+    }
+
+    /** Legacy add APIs have optimistic callers and no failure result. Always use the caught, atomic scheduler and restore their UI from committed favorites on failure, regardless of the writer feature flag. */
+    private fun executeAddition(block: (TransactionContext) -> Unit) {
+        scheduleTransaction(onComplete = { success, _ ->
+            if (!success) model.forceReload("favorite-insertion-failed")
+        }, block = block)
     }
 
     private fun checkItemInfoLocked(
@@ -415,7 +444,7 @@ open class ModelWriter(
         if (item.id == ItemInfo.NO_ID) {
             item.id = model.modelDbController.generateNewItemId()
         }
-        execute { it.addItemToDatabase(item) }
+        executeAddition { it.addItemToDatabase(item) }
     }
 
     /**
@@ -429,7 +458,7 @@ open class ModelWriter(
                 it.id = model.modelDbController.generateNewItemId()
             }
         }
-        execute { it.addItemsToDatabase(items) }
+        executeAddition { it.addItemsToDatabase(items) }
     }
 
     /**

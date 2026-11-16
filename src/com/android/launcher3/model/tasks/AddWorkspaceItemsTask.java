@@ -43,8 +43,11 @@ import com.android.launcher3.util.IntSet;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.StreamSupport;
+
+import kotlin.Unit;
 
 /**
  * Task to add auto-created workspace items.
@@ -58,6 +61,7 @@ public class AddWorkspaceItemsTask implements ModelUpdateTask {
 
     @NonNull
     private final WorkspaceItemSpaceFinder mItemSpaceFinder;
+    private final Consumer<Boolean> mOnComplete;
 
     /**
      * @param itemList items to add on the workspace
@@ -65,8 +69,15 @@ public class AddWorkspaceItemsTask implements ModelUpdateTask {
      */
     public AddWorkspaceItemsTask(@NonNull final List<Supplier<ItemInfo>> itemList,
             @NonNull final WorkspaceItemSpaceFinder itemSpaceFinder) {
+        this(itemList, itemSpaceFinder, success -> { });
+    }
+
+    public AddWorkspaceItemsTask(@NonNull final List<Supplier<ItemInfo>> itemList,
+            @NonNull final WorkspaceItemSpaceFinder itemSpaceFinder,
+            @NonNull final Consumer<Boolean> onComplete) {
         mItemList = itemList;
         mItemSpaceFinder = itemSpaceFinder;
+        mOnComplete = onComplete;
     }
 
 
@@ -74,6 +85,7 @@ public class AddWorkspaceItemsTask implements ModelUpdateTask {
     public void execute(@NonNull ModelTaskController taskController, @NonNull BgDataModel dataModel,
             @NonNull AllAppsList apps) {
         if (mItemList.isEmpty()) {
+            mOnComplete.accept(true);
             return;
         }
 
@@ -128,12 +140,17 @@ public class AddWorkspaceItemsTask implements ModelUpdateTask {
                 FileLog.d(LOG, "Adding item info to workspace: " + item);
             }
 
-            // Add the shortcut to the db
-            writer.addItemsToDatabase(addedItemsFinal);
-        }
-
-        if (!addedItemsFinal.isEmpty()) {
-            taskController.scheduleCallbackTask(cb -> cb.bindItemsAdded(addedItemsFinal));
+            // Completion, not task enqueue, authorizes binding and retiring an install-queue request. A failed birth reservation must roll back the entire batch without optimistic success.
+            writer.scheduleTransaction((success, result) -> {
+                if (success && !addedItemsFinal.isEmpty()) {
+                    taskController.scheduleCallbackTask(cb -> cb.bindItemsAdded(addedItemsFinal));
+                }
+                mOnComplete.accept(success);
+                return Unit.INSTANCE;
+            }, transaction -> {
+                transaction.addItemsToDatabase(addedItemsFinal);
+                return Unit.INSTANCE;
+            });
         }
     }
 
