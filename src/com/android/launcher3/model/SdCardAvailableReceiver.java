@@ -23,10 +23,8 @@ import android.content.pm.LauncherApps;
 import android.os.UserHandle;
 
 import com.android.launcher3.LauncherModel;
-import com.android.launcher3.util.ApplicationInfoWrapper;
 import com.android.launcher3.util.PackageUserKey;
 
-import java.util.ArrayList;
 import java.util.Set;
 
 /**
@@ -55,23 +53,13 @@ public class SdCardAvailableReceiver extends BroadcastReceiver {
         for (PackageUserKey puk : mPackages) {
             UserHandle user = puk.mUser;
 
-            final ArrayList<String> packagesRemoved = new ArrayList<>();
-            final ArrayList<String> packagesUnavailable = new ArrayList<>();
-
+            // Boot completion does not establish that this package's volume is mounted or that PackageManager has registered its activities. Only a real removal callback may report an uninstall.
             if (!launcherApps.isPackageEnabled(puk.mPackageName, user)) {
-                if (new ApplicationInfoWrapper(context, puk.mPackageName, user).isOnSdCard()) {
-                    packagesUnavailable.add(puk.mPackageName);
-                } else {
-                    packagesRemoved.add(puk.mPackageName);
-                }
-            }
-            if (!packagesRemoved.isEmpty()) {
-                mModel.newModelCallbacks().onPackagesRemoved(user, packagesRemoved);
-            }
-            if (!packagesUnavailable.isEmpty()) {
                 mModel.newModelCallbacks().onPackagesUnavailable(
-                        packagesUnavailable.toArray(new String[packagesUnavailable.size()]),
-                        user, false);
+                        new String[] {puk.mPackageName}, user, false);
+            } else {
+                mModel.newModelCallbacks().onPackagesAvailable(
+                        new String[] {puk.mPackageName}, user, false);
             }
         }
 
