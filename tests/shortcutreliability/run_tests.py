@@ -37,7 +37,10 @@ subprocess.run([str(JAVA_HOME / "bin/java"), "-cp", str(KOTLIN_HOME / "lib/*"),
                 "-nowarn", "-d", str(OUT), *map(str, kotlin + sources)], check=True)
 subprocess.run([str(JAVA_HOME / "bin/javac"), "-encoding", "UTF-8", "-cp", classpath,
                 "-d", str(OUT), *map(str, sources)], check=True)
-subprocess.run([str(JAVA_HOME / "bin/java"), "-ea", "-cp", classpath, "ShortcutReliabilityTest", str(OUT)], check=True)
+test_args = ["ShortcutReliabilityTest", str(OUT)]
+if "--finding" in sys.argv:
+    test_args = ["ReviewRegressionTest", sys.argv[sys.argv.index("--finding") + 1], str(OUT)]
+subprocess.run([str(JAVA_HOME / "bin/java"), "-ea", "-cp", classpath, *test_args], check=True)
 compiler_cp = os.pathsep.join([str(OUT), str(KOTLIN_HOME / "lib/*")])
 subprocess.run([str(JAVA_HOME / "bin/javac"), "-proc:none", "-cp", compiler_cp, "-d", str(OUT),
                 str(HERE / "tools/KotlinSyntaxCheck.java")], check=True)

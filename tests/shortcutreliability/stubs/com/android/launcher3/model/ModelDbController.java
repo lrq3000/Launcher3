@@ -5,7 +5,11 @@ import java.util.*;
 public class ModelDbController {
     public final List<Object[]> rows = new ArrayList<>();
     public String identity = "database-one";
-    public String getAvailabilityIdentity() { return identity; }
+    public boolean queriesAllowed = true;
+    public String getAvailabilityIdentity() {
+        if (!queriesAllowed) throw new AssertionError("Database query after worker phase");
+        return identity;
+    }
     public Cursor query(String[] columns, String selection, String[] args, String sortOrder) {
         if (!selection.equals("itemType=? AND restored=0") || !Arrays.equals(args, new String[] {"0"})) {
             throw new AssertionError("Incorrect favorites snapshot selection");

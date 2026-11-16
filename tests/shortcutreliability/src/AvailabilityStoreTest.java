@@ -22,7 +22,7 @@ public final class AvailabilityStoreTest {
 
     public static void run(Path root) throws Exception {
         Path file = root.resolve("availability.bin");
-        WorkspaceAvailabilityStore store = new WorkspaceAvailabilityStore(file.toFile());
+        WorkspaceAvailabilityStore store = StoreFixtures.snapshot(file.toFile());
         Row first = new Row("db-one", 10, 42, "sd.app/First");
         Row second = new Row("db-one", 10, 43, "sd.app/Second");
         Row profile = new Row("db-one", 11, 42, "sd.app/First");
@@ -39,7 +39,7 @@ public final class AvailabilityStoreTest {
         check(store.shouldPreserve(profile), "Current external association supersedes old internal history without requiring activity registration");
         store.observe(profile, Storage.INTERNAL, "internal");
         store.unavailable(10, "sd.app");
-        store = new WorkspaceAvailabilityStore(file.toFile());
+        store = StoreFixtures.snapshot(file.toFile());
         check(store.shouldPreserve(first), "Recovery survives process restart");
         check(store.isRecovering(second), "Every saved component remains independently protected");
         check(!store.isRecovering(profile), "Unavailability is profile scoped");
@@ -47,7 +47,7 @@ public final class AvailabilityStoreTest {
         check(store.isRecovering(second), "Another component returning must not resolve Second");
         check(!store.isRecovering(first), "Exact target recovery clears its own state");
         store.removed(List.of(first, second));
-        store = new WorkspaceAvailabilityStore(file.toFile());
+        store = StoreFixtures.snapshot(file.toFile());
         check(store.isRemoved(first), "Uninstall persists before favorites mutation");
         check(!store.isRemoved(profile), "Uninstall must not affect another profile");
         check(!store.isRemoved(otherDb), "Uninstall must not affect another database");
@@ -57,33 +57,33 @@ public final class AvailabilityStoreTest {
         store.observe(replacement, Storage.INTERNAL, "internal");
         check(!store.isRemoved(replacement), "New installation remains independent of old removal");
         Files.write(file.resolveSibling("availability.bin.new"), new byte[] {1, 2});
-        store = new WorkspaceAvailabilityStore(file.toFile());
+        store = StoreFixtures.snapshot(file.toFile());
         check(store.isRemoved(first), "Interrupted next write retains prior committed state");
         Files.write(file, new byte[] {1, 2, 3});
-        store = new WorkspaceAvailabilityStore(file.toFile());
+        store = StoreFixtures.snapshot(file.toFile());
         check(store.shouldPreserve(profile), "Corrupt store fails safe instead of purging favorites");
         check(!store.isRemoved(first), "Corrupt store must not invent removal evidence");
         Path blocked = root.resolve("unwritable-store");
         Files.createDirectory(blocked);
-        store = new WorkspaceAvailabilityStore(blocked.toFile());
+        store = StoreFixtures.snapshot(blocked.toFile());
         store.observe(profile, Storage.INTERNAL, "internal");
         check(store.shouldPreserve(profile), "Failed persistence cannot authorize negative-lookup removal");
         check(store.getLastFailure() != null, "Persistence failure must remain diagnosable");
         Path batchFile = root.resolve("batched.bin");
-        WorkspaceAvailabilityStore batch = new WorkspaceAvailabilityStore(batchFile.toFile());
+        WorkspaceAvailabilityStore batch = StoreFixtures.snapshot(batchFile.toFile());
         batch.beginBatch();
         batch.observe(profile, Storage.INTERNAL, "internal");
-        check(new WorkspaceAvailabilityStore(batchFile.toFile()).shouldPreserve(profile),
+        check(StoreFixtures.snapshot(batchFile.toFile()).shouldPreserve(profile),
                 "Interrupted positive-observation batch leaves only conservative unknown history");
         batch.endBatch();
-        check(!new WorkspaceAvailabilityStore(batchFile.toFile()).shouldPreserve(profile),
+        check(!StoreFixtures.snapshot(batchFile.toFile()).shouldPreserve(profile),
                 "Completed batch atomically commits positive storage history");
         batch.beginBatch();
         batch.protect(profile);
-        check(new WorkspaceAvailabilityStore(batchFile.toFile()).isRecovering(profile),
+        check(StoreFixtures.snapshot(batchFile.toFile()).isRecovering(profile),
                 "Recovery evidence bypasses observation batching before process death");
         batch.removed(List.of(profile));
-        check(new WorkspaceAvailabilityStore(batchFile.toFile()).isRemoved(profile),
+        check(StoreFixtures.snapshot(batchFile.toFile()).isRemoved(profile),
                 "Confirmed removals bypass batching before favorites mutation");
         batch.endBatch();
         System.out.println("PASS availability store: " + count + " behavioral assertions");

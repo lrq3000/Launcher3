@@ -24,5 +24,6 @@ public final class ShortcutReliabilityTest {
         System.out.println("PASS receiver: absent package after boot is unavailable, not removed");
         AvailabilityStoreTest.run(java.nio.file.Path.of(args[0]));
         ModelBoundaryTest.run(java.nio.file.Path.of(args[0]));
+        ReviewRegressionTest.runAll(java.nio.file.Path.of(args[0]));
     }
 }

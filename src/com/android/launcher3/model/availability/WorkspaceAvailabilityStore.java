@@ -32,6 +32,18 @@ import java.util.zip.CRC32;
 
 /** Durable evidence, not a second favorites database. Never recreates items or infers an uninstall. */
 public final class WorkspaceAvailabilityStore {
+    private static final Map<String, WorkspaceAvailabilityStore> OWNERS = new HashMap<>();
+
+    /** All models, including previews, share one mutable journal/batch owner for a canonical path. */
+    public static synchronized WorkspaceAvailabilityStore open(File file) {
+        String path;
+        try {
+            path = file.getCanonicalPath();
+        } catch (IOException e) {
+            path = file.getAbsoluteFile().toPath().normalize().toString();
+        }
+        return OWNERS.computeIfAbsent(path, key -> new WorkspaceAvailabilityStore(new File(key)));
+    }
     private static final int MAGIC = 0x4c334156;
     private static final int VERSION = 1;
     private static final int MAX_RECORDS = 100000;
@@ -87,7 +99,7 @@ public final class WorkspaceAvailabilityStore {
     private int mBatchDepth;
     private boolean mDirty;
 
-    public WorkspaceAvailabilityStore(File file) {
+    private WorkspaceAvailabilityStore(File file) {
         mFile = file;
         if (!file.exists()) return;
         try {

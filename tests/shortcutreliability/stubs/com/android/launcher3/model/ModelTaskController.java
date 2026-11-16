@@ -12,6 +12,7 @@ public class ModelTaskController {
     private final BgDataModel data;
     public final IconCache icons = new IconCache();
     public final List<ItemInfo> bound = new ArrayList<>();
+    public Predicate<ItemInfo> lastRemovalMatcher;
     public ModelTaskController(Context context, LauncherModel model, BgDataModel data) {
         this.context = context; this.model = model; this.data = data;
     }
@@ -22,6 +23,9 @@ public class ModelTaskController {
     public void bindApplicationsIfNeeded() {}
     public void bindUpdatedWidgets(BgDataModel model) {}
     public void bindUpdatedWorkspaceItems(Collection<? extends ItemInfo> items) { bound.addAll(items); }
-    public void deleteAndBindComponentsRemoved(Predicate<ItemInfo> matcher, String reason) { data.itemsIdMap.removeIf(matcher); }
+    public void deleteAndBindComponentsRemoved(Predicate<ItemInfo> matcher, String reason) {
+        lastRemovalMatcher = matcher;
+        data.itemsIdMap.removeIf(matcher);
+    }
     public static class Writer { public void updateItemInDatabase(ItemInfo item) {} }
 }

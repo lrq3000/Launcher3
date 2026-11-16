@@ -40,7 +40,7 @@ class WorkspaceAvailability(private val context: Context, private val db: ModelD
     fun getRevision(): Long = revision
 
     private val store by lazy {
-        WorkspaceAvailabilityStore(File(context.noBackupFilesDir, "workspace-availability-v1"))
+        WorkspaceAvailabilityStore.open(File(context.noBackupFilesDir, "workspace-availability-v1"))
     }
 
     fun beginLoad() = store.beginBatch()

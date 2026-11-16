@@ -186,7 +186,7 @@ class PackageUpdatedTaskTest {
         assertThat(widgetsUpdates).hasSize(2)
         workspaceUpdates.verifyItemUpdated()
 
-        verify(modelState.appsList).updatePackage(any(), eq(expectedPackage), eq(mUser))
+        verify(modelState.appsList).updatePackage(any(), eq(expectedPackage), eq(mUser), any())
         verify(mockTaskController).bindUpdatedWorkspaceItems(listOf(expectedWorkspaceItem))
         verify(mockTaskController).bindUpdatedWidgets(modelState.dataModel)
 
@@ -209,7 +209,7 @@ class PackageUpdatedTaskTest {
         assertThat(appUpdates).hasSize(2)
         workspaceUpdates.verifyItemUpdated()
 
-        verify(modelState.appsList).updatePackage(any(), eq(expectedPackage), eq(mUser))
+        verify(modelState.appsList).updatePackage(any(), eq(expectedPackage), eq(mUser), any())
         verify(mockTaskController).bindUpdatedWorkspaceItems(listOf(expectedWorkspaceItem))
 
         assertThat(modelState.appsList.data.firstOrNull()?.componentName)

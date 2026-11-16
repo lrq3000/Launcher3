@@ -85,10 +85,17 @@ object PackageTaskFactory {
                     }
                 }
 
+            val confirmedKeys = confirmedRows?.let { rows ->
+                synchronized(dataModel) {
+                    dataModel.itemsIdMap.filterIsInstance<WorkspaceItemInfo>()
+                        .filter { matcher.test(it) && availability.row(it) in rows }
+                        .map { Triple(it.user, it.id, it.targetComponent) }.toSet()
+                }
+            }
             val removeMatch = matcher.and(ItemInfoMatcher.ofItems(forceKeepShortcuts + preserved).negate()).and { item ->
                 // A queued uninstall snapshot must not remove a row added for a subsequent installation. Specialized item policies remain package based.
                 item !is WorkspaceItemInfo || item.itemType != ITEM_TYPE_APPLICATION || item.isPromise ||
-                    confirmedRows == null || availability.row(item) in confirmedRows
+                    confirmedKeys == null || Triple(item.user, item.id, item.targetComponent) in confirmedKeys
             }
             taskController.deleteAndBindComponentsRemoved(
                 removeMatch,
