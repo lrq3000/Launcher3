@@ -84,6 +84,8 @@ public final class WorkspaceAvailabilityStore {
     private final Map<Row, ItemState> mItems = new HashMap<>();
     private IOException mLastFailure;
     private boolean mReadable = true;
+    private int mBatchDepth;
+    private boolean mDirty;
 
     public WorkspaceAvailabilityStore(File file) {
         mFile = file;
@@ -138,7 +140,7 @@ public final class WorkspaceAvailabilityStore {
     public synchronized boolean shouldPreserve(Row row) {
         if (isRemoved(row)) return false;
         PackageState pkg = mPackages.get(row.packageKey());
-        return !mReadable || pkg == null || pkg.storage != Storage.INTERNAL
+        return !mReadable || !mItems.containsKey(row) || pkg == null || pkg.storage != Storage.INTERNAL
                 || pkg.unavailable || isRecovering(row);
     }
 
@@ -172,7 +174,7 @@ public final class WorkspaceAvailabilityStore {
         pkg.unavailable = false;
         pkg.storage = storage;
         pkg.uuid = normalizedUuid;
-        if (changed) persist();
+        if (changed) observationChanged();
     }
 
     public synchronized void unavailable(long serial, String packageName) {
@@ -185,6 +187,17 @@ public final class WorkspaceAvailabilityStore {
         persist();
     }
 
+    /** Storage evidence may change before launcher activities are registered. It must not clear recovery. */
+    public synchronized void classifyStorage(long serial, String packageName, Storage storage, String uuid) {
+        PackageState pkg = mPackages.computeIfAbsent(serial + ":" + packageName,
+                ignored -> new PackageState());
+        String normalizedUuid = uuid == null ? "" : uuid;
+        if (pkg.storage == storage && pkg.uuid.equals(normalizedUuid)) return;
+        pkg.storage = storage;
+        pkg.uuid = normalizedUuid;
+        observationChanged();
+    }
+
     /** Snapshot actual favorites before mutation. Tombstones never apply to future row IDs. */
     public synchronized void removed(Collection<Row> rows) {
         for (Row row : rows) mItems.computeIfAbsent(row, key -> new ItemState()).removed = true;
@@ -192,6 +205,19 @@ public final class WorkspaceAvailabilityStore {
     }
 
     public synchronized IOException getLastFailure() { return mLastFailure; }
+
+    /** Batch positive loader observations to avoid serializing/fsyncing the entire journal once per item. Safety-critical recovery and removal evidence always persists immediately. */
+    public synchronized void beginBatch() { mBatchDepth++; }
+
+    public synchronized void endBatch() {
+        if (mBatchDepth <= 0) throw new IllegalStateException("No observation batch");
+        if (--mBatchDepth == 0 && mDirty) persist();
+    }
+
+    private void observationChanged() {
+        mDirty = true;
+        if (mBatchDepth == 0) persist();
+    }
 
     private void persist() {
         try {
@@ -232,6 +258,7 @@ public final class WorkspaceAvailabilityStore {
             // Do not fall back to a non-atomic replacement. An interrupted write must leave the prior committed journal intact.
             Files.move(next.toPath(), mFile.toPath(), StandardCopyOption.ATOMIC_MOVE,
                     StandardCopyOption.REPLACE_EXISTING);
+            mDirty = false;
         } catch (IOException e) {
             mLastFailure = e;
             mReadable = false;

@@ -111,6 +111,9 @@ class SandboxApplication private constructor(private val base: SandboxApplicatio
 
     override fun getDatabasePath(name: String) = File(dbDir.apply { if (!exists()) mkdirs() }, name)
 
+    // Durable model sidecars must be isolated along with favorites, not shared by otherwise independent sandbox models.
+    override fun getNoBackupFilesDir() = File(dbDir, "no_backup").apply { mkdirs() }
+
     override fun deleteDatabase(name: String): Boolean =
         SQLiteDatabase.deleteDatabase(getDatabasePath(name))
 

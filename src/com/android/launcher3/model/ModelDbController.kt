@@ -75,6 +75,27 @@ internal constructor(
 
     private lateinit var openHelper: DatabaseHelper
 
+    /** A tiny companion table ties removal evidence to this database incarnation without changing or migrating favorites. */
+    @Synchronized
+    fun getAvailabilityIdentity(): String? {
+        return runCatching {
+                val table = getTable()
+                table.newTransaction().use { transaction ->
+                    table.execSQL("CREATE TABLE IF NOT EXISTS workspace_availability_identity (id INTEGER PRIMARY KEY CHECK (id=1), token TEXT NOT NULL)")
+                    table.execSQL("INSERT OR IGNORE INTO workspace_availability_identity VALUES (1, '${java.util.UUID.randomUUID()}')")
+                    val token =
+                        table.rawQuery("SELECT token FROM workspace_availability_identity WHERE id=1") {
+                            moveToFirst()
+                            getString(0)
+                        }
+                    transaction.commit()
+                    token
+                }
+            }
+            .onFailure { Log.w(TAG, "Cannot identify workspace database; preserving shortcuts", it) }
+            .getOrNull()
+    }
+
     @Synchronized
     private fun createDbIfNotExists() {
         if (!::openHelper.isInitialized) {

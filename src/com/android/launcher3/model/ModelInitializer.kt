@@ -21,6 +21,8 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.pm.LauncherApps
 import android.content.pm.LauncherApps.ArchiveCompatibilityParams
+import android.os.storage.StorageManager
+import android.os.storage.StorageVolume
 import android.util.Log
 import androidx.annotation.WorkerThread
 import com.android.launcher3.BuildConfig
@@ -99,12 +101,23 @@ constructor(
         val launcherApps = context.getSystemService(LauncherApps::class.java)!!
         // TODO: remove logging after b/425319508
         FileLog.d(TAG, "registering modelCallbacks for LauncherApps")
-        launcherApps.registerCallback(modelCallbacks, MODEL_EXECUTOR.handler)
+        // Journal consequential package events even while the model executor is occupied by a loader. The callbacks themselves only persist evidence and enqueue model work.
+        launcherApps.registerCallback(modelCallbacks, UI_HELPER_EXECUTOR.handler)
         lifeCycle.addCloseable {
             // TODO: remove logging after b/425319508
             FileLog.d(TAG, "Unregistering modelCallbacks from LauncherApps")
             launcherApps.unregisterCallback(modelCallbacks)
         }
+
+        val storageManager = context.getSystemService(StorageManager::class.java)
+        val storageCallback = object : StorageManager.StorageVolumeCallback() {
+            override fun onStateChanged(volume: StorageVolume) {
+                // Any volume event is only a hint to query the exact pending targets, never evidence that another package's expected storage is ready.
+                model.revalidateUnavailableWorkspaceItems()
+            }
+        }
+        storageManager.registerStorageVolumeCallback(UI_HELPER_EXECUTOR, storageCallback)
+        lifeCycle.addCloseable { storageManager.unregisterStorageVolumeCallback(storageCallback) }
 
         if (Utilities.ATLEAST_V && Flags.enableSupportForArchiving()) {
             launcherApps.setArchiveCompatibility(

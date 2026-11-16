@@ -143,12 +143,15 @@ public class WorkspaceItemInfo extends ItemInfoWithIcon {
     @Override
     public void onAddToDatabase(@NonNull ContentWriter writer) {
         super.onAddToDatabase(writer);
-        writer.put(Favorites.TITLE, title)
-                .put(Favorites.INTENT, getIntent())
+        // Moving an unavailable item must not overwrite a valid saved label or icon with a fallback. Its intent and placement still persist normally.
+        boolean unavailable = itemType == Favorites.ITEM_TYPE_APPLICATION
+                && (runtimeStatusFlags & FLAG_DISABLED_NOT_AVAILABLE) != 0;
+        if (!unavailable) writer.put(Favorites.TITLE, title);
+        writer.put(Favorites.INTENT, getIntent())
                 .put(Favorites.OPTIONS, options)
                 .put(Favorites.RESTORED, status);
 
-        if (!getMatchingLookupFlag().useLowRes()) {
+        if (!unavailable && !getMatchingLookupFlag().useLowRes()) {
             writer.putIcon(bitmap, user);
         }
     }

@@ -125,6 +125,21 @@ class PackageTaskFactoryTest {
         }
 
     @Test
+    fun inferred_removal_preserves_ordinary_item_and_its_cached_appearance() {
+        expectedWorkspaceItem.id = 42
+        expectedWorkspaceItem.title = "Saved label"
+        modelState.dataModel.addItems(context, listOf(expectedWorkspaceItem), ModelTask)
+
+        PackageTaskFactory.appsRemovedByLookup(myUser, setOf(expectedPackage)).executeSync()
+
+        assertThat(modelState.dataModel.itemsIdMap[42]).isSameInstanceAs(expectedWorkspaceItem)
+        assertThat(expectedWorkspaceItem.title.toString()).isEqualTo("Saved label")
+        assertThat(expectedWorkspaceItem.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE)
+            .isNotEqualTo(0)
+        verify(mockIconCache, never()).removeIconsForPkg(expectedPackage, myUser)
+    }
+
+    @Test
     @EnableFlags(Flags.FLAG_MODEL_REPOSITORY)
     fun remove_triggers_icon_and_package_removal() {
         modelState.appsList.add(

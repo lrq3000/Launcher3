@@ -60,6 +60,7 @@ import com.android.launcher3.Flags;
 import com.android.launcher3.InvariantDeviceProfile;
 import com.android.launcher3.LauncherModel;
 import com.android.launcher3.LauncherPrefs;
+import com.android.launcher3.LauncherSettings.Favorites;
 import com.android.launcher3.Utilities;
 import com.android.launcher3.automation.AutomationRepository;
 import com.android.launcher3.backuprestore.LauncherRestoreEventLogger;
@@ -96,6 +97,7 @@ import com.android.launcher3.shortcuts.ShortcutKey;
 import com.android.launcher3.shortcuts.ShortcutRequest;
 import com.android.launcher3.shortcuts.ShortcutRequest.QueryResult;
 import com.android.launcher3.util.ApiWrapper;
+import com.android.launcher3.util.ContentWriter;
 import com.android.launcher3.util.IOUtils;
 import com.android.launcher3.util.IntArray;
 import com.android.launcher3.util.IntSet;
@@ -175,6 +177,7 @@ public class LoaderTask implements Runnable {
 
     private final Set<PackageUserKey> mPendingPackages = new HashSet<>();
     private String mDbName;
+    private long mAvailabilityRevision;
     private final Provider<FolderNameProvider> mFolderNameProviderFactory;
     private final Provider<LauncherRestoreEventLogger> mRestoreEventLoggerProvider;
     private final WorkspaceItemSpaceFinder mWorkspaceItemSpaceFinder;
@@ -289,6 +292,8 @@ public class LoaderTask implements Runnable {
     private void loadAllSurfacesOrdered(
             LoaderMemoryLogger memoryLogger, LauncherRestoreEventLogger restoreEventLogger) {
 
+        mAvailabilityRevision = mModel.getWorkspaceAvailability().getRevision();
+
         IconCacheUpdateHandler updateHandler = mIconCache.getUpdateHandler();
         List<CacheableShortcutInfo> allShortcuts = new ArrayList<>();
         Trace.beginSection("LoadWorkspace");
@@ -313,8 +318,12 @@ public class LoaderTask implements Runnable {
             logASplit("sanitizeData finished");
         }
 
-        verifyNotStopped();
-        mLauncherBinder.bindWorkspace(true /* incrementBindId */, /* isBindSync= */ false);
+        // Serialize the final binding boundary with durable package events. Merely stopping a loader after journaling leaves a gap between verifyNotStopped() and bindWorkspace().
+        synchronized (mModel.getWorkspaceAvailability()) {
+            verifyAvailabilityUnchanged();
+            verifyNotStopped();
+            mLauncherBinder.bindWorkspace(true /* incrementBindId */, /* isBindSync= */ false);
+        }
         logASplit("bindWorkspace finished");
 
         // NOTE: Model task must be enqueued after the loader has finished. Since MODEL_EXECUTOR
@@ -458,10 +467,12 @@ public class LoaderTask implements Runnable {
             String selection,
             @Nullable LoaderMemoryLogger memoryLogger,
             @Nullable LauncherRestoreEventLogger restoreEventLogger) {
-        final boolean isSdCardReady = Utilities.isBootCompleted();
+        final boolean isBootCompleted = Utilities.isBootCompleted();
         final WidgetInflater widgetInflater = new WidgetInflater(mContext, mIsSafeModeEnabled);
 
         ModelDbController dbController = mModel.getModelDbController();
+
+        boolean packageRowsRemoved = mModel.getWorkspaceAvailability().reconcileRemovals();
 
         try {
             dbController.attemptMigrateDb(restoreEventLogger, mModelDelegate);
@@ -473,6 +484,9 @@ public class LoaderTask implements Runnable {
         if (dbController.loadDefaultFavoritesIfNecessary()) {
             mPrefs.put(PREF_MIGRATION_PENDING, true);
         }
+
+        // Consequential package callbacks are journaled on the helper executor before model task discard. A callback arriving during this load restarts it before binding.
+        packageRowsRemoved |= mModel.getWorkspaceAvailability().reconcileRemovals();
 
         synchronized (mBgDataModel) {
             mBgDataModel.clear();
@@ -495,6 +509,7 @@ public class LoaderTask implements Runnable {
             final Bundle extras = c.getExtras();
             mDbName = extras == null ? null : extras.getString(ModelDbController.EXTRA_DB_NAME);
             WorkspaceItemProcessor itemProcessor;
+            mModel.getWorkspaceAvailability().beginLoad();
             try {
                 final LongSparseArray<Boolean> unlockedUsers = new LongSparseArray<>();
                 queryPinnedShortcutsForUnlockedUsers(mContext, unlockedUsers);
@@ -503,7 +518,7 @@ public class LoaderTask implements Runnable {
                 itemProcessor = new WorkspaceItemProcessor(c, memoryLogger,
                         mUserManagerState, mLauncherApps, mPendingPackages,
                         mShortcutKeyToPinnedShortcuts, mContext, mIDP, mIconCache,
-                        mIsSafeModeEnabled, installingPkgs, isSdCardReady, widgetInflater,
+                        mIsSafeModeEnabled, installingPkgs, isBootCompleted, widgetInflater,
                         mPmHelper, mWorkspaceIconRequestInfos, unlockedUsers, allDeepShortcuts,
                         mWidgetSizeHandler, mWorkspaceItemSpaceFinder, mHomeScreenFilesQueryResult,
                         mAutomationRepo);
@@ -518,6 +533,7 @@ public class LoaderTask implements Runnable {
                 }
                 tryLoadWorkspaceIconsInBulk(mWorkspaceIconRequestInfos);
             } finally {
+                mModel.getWorkspaceAvailability().endLoad();
                 IOUtils.closeSilently(c);
             }
 
@@ -529,15 +545,23 @@ public class LoaderTask implements Runnable {
 
             mBgDataModel.updateStringCache(mContext);
 
-            var loadedItems =
-                    itemProcessor.finalizeData(mModelDelegate, mModel.getModelDbController());
-            if (mIsRestoreFromBackup || mPrefs.get(PREF_MIGRATION_PENDING)) {
-                mBrowserIconMigratorFactory
-                        .createBrowserIconMigrator(loadedItems,
-                                mModelTaskController.getModelWriter()).performMigration();
+            synchronized (mModel.getWorkspaceAvailability()) {
+                // Check before committing loader deletions as well as publishing repository data. A journaled event must not merely cancel binding after stale destructive decisions have already reached favorites.
+                verifyAvailabilityUnchanged();
+                var loadedItems = itemProcessor.finalizeData(mModelDelegate,
+                        mModel.getModelDbController(), packageRowsRemoved);
+                if (mIsRestoreFromBackup || mPrefs.get(PREF_MIGRATION_PENDING)) {
+                    mBrowserIconMigratorFactory.createBrowserIconMigrator(loadedItems,
+                            mModelTaskController.getModelWriter()).performMigration();
+                }
+                mBgDataModel.dataLoadComplete(loadedItems, name /* reason */);
             }
+        }
+    }
 
-            mBgDataModel.dataLoadComplete(loadedItems, name /* reason */);
+    private void verifyAvailabilityUnchanged() {
+        if (mAvailabilityRevision != mModel.getWorkspaceAvailability().getRevision()) {
+            throw new CancellationException("Package availability changed during workspace load");
         }
     }
 
@@ -594,6 +618,18 @@ public class LoaderTask implements Runnable {
                             + wai.getTargetComponent() + ", will attempt to load from iconBlob");
                     iconRequestInfo.loadIconFromDbBlob(mContext);
                 }
+                if (wai.itemType == Favorites.ITEM_TYPE_APPLICATION
+                        && (wai.runtimeStatusFlags & WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) == 0
+                        && iconRequestInfo.launcherActivityInfo != null
+                        && !mIconCache.isDefaultIcon(wai.bitmap, wai.user)
+                        && !wai.getMatchingLookupFlag().useLowRes()) {
+                    // Persist a usable full-resolution fallback for folder children too. ContentWriter rejects generic icons; unavailable items never enter this bulk request list.
+                    ContentWriter writer = new ContentWriter(mContext,
+                            new ContentWriter.CommitParams(mModel.getModelDbController(),
+                                    Favorites._ID + "=?", new String[] {Integer.toString(wai.id)}));
+                    if (wai.title != null && wai.title.length() > 0) writer.put(Favorites.TITLE, wai.title);
+                    writer.putIcon(wai.bitmap, wai.user).commit();
+                }
             }
         } finally {
             Trace.endSection();
@@ -605,7 +641,9 @@ public class LoaderTask implements Runnable {
         synchronized (mBgDataModel) {
             for (ItemInfo info : mBgDataModel.itemsIdMap) {
                 if (info instanceof WorkspaceItemInfo si) {
-                    if (si.isPromise() && si.getTargetComponent() != null) {
+                    if ((si.isPromise() || (si.runtimeStatusFlags
+                            & WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) != 0)
+                            && si.getTargetComponent() != null) {
                         updateHandler.addPackagesToIgnore(
                                 si.user, si.getTargetComponent().getPackageName());
                     }

@@ -235,7 +235,7 @@ class WorkspaceItemProcessorTest {
             unlockedUsers = unlockedUsers,
             iconRequestInfos = iconRequestInfos,
             pendingPackages = pendingPackages,
-            isSdCardReady = isSdCardReady,
+            isBootCompleted = isSdCardReady,
             shortcutKeyToPinnedShortcuts = shortcutKeyToPinnedShortcuts,
             installingPkgs = installingPkgs,
             allDeepShortcuts = allDeepShortcuts,
@@ -247,6 +247,37 @@ class WorkspaceItemProcessorTest {
             homeScreenFiles = homeScreenFiles,
             automationRepo = automationRepo,
         )
+    }
+
+    @Test
+    fun `Missing ordinary application after boot keeps original row and intent`() {
+        realCursorRow.add(RESTORED, 0)
+        doReturn(false).whenever(mLauncherApps).isPackageEnabled("package", mUserHandle)
+        itemProcessorUnderTest = createWorkspaceItemProcessorUnderTest(isSdCardReady = true)
+
+        itemProcessorUnderTest.processItem()
+
+        assertThat(workspaceInfo.id).isEqualTo(1)
+        assertThat(workspaceInfo.intent.toUri(0)).isEqualTo(mIntent.toUri(0))
+        assertThat(workspaceInfo.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE)
+            .isNotEqualTo(0)
+        verify(mockCursor).checkAndAddItem(eq(workspaceInfo), any(), anyOrNull())
+        verify(mockCursor, times(0)).markDeleted(any(), any())
+    }
+
+    @Test
+    fun `Missing saved activity without history is not replaced by another activity`() {
+        realCursorRow.add(RESTORED, 0)
+        doReturn(false).whenever(mLauncherApps).isActivityEnabled(mComponentName, mUserHandle)
+        itemProcessorUnderTest = createWorkspaceItemProcessorUnderTest(isSdCardReady = true)
+
+        itemProcessorUnderTest.processItem()
+
+        assertThat(workspaceInfo.intent.component).isEqualTo(mComponentName)
+        assertThat(workspaceInfo.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE)
+            .isNotEqualTo(0)
+        verify(mockCursor.updater(), times(0)).put(eq(Favorites.INTENT), any<String>())
+        verify(mockCursor).checkAndAddItem(eq(workspaceInfo), any(), anyOrNull())
     }
 
     @Test

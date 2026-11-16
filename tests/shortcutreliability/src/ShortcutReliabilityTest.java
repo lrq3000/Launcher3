@@ -23,5 +23,6 @@ public final class ShortcutReliabilityTest {
         if (!context.unregistered) throw new AssertionError("Receiver must unregister");
         System.out.println("PASS receiver: absent package after boot is unavailable, not removed");
         AvailabilityStoreTest.run(java.nio.file.Path.of(args[0]));
+        ModelBoundaryTest.run(java.nio.file.Path.of(args[0]));
     }
 }

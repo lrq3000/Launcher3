@@ -41,11 +41,16 @@ import java.util.function.Consumer
  * Implementation of {@link LauncherApps#Callbacks} which converts various events to corresponding
  * model tasks
  */
-class ModelLauncherCallbacks(private var taskExecutor: Consumer<ModelUpdateTask>) :
+class ModelLauncherCallbacks(
+    private var taskExecutor: Consumer<ModelUpdateTask>,
+    private val availability: WorkspaceAvailability? = null,
+    private val availabilityChanged: () -> Unit = {},
+) :
     LauncherApps.Callback(), InstallSessionTracker.Callback {
 
     override fun onPackageAdded(packageName: String, user: UserHandle) {
         FileLog.d(TAG, "onPackageAdded triggered for packageName=$packageName, user=$user")
+        availabilityChanged()
         taskExecutor.accept(PackageUpdatedTask(OP_ADD, user, packageName))
     }
 
@@ -63,7 +68,10 @@ class ModelLauncherCallbacks(private var taskExecutor: Consumer<ModelUpdateTask>
 
     override fun onPackageRemoved(packageName: String, user: UserHandle) {
         FileLog.d(TAG, "onPackageRemoved triggered for packageName=$packageName, user=$user")
-        taskExecutor.accept(PackageTaskFactory.appsRemoved(user, setOf(packageName)))
+        val packages = setOf(packageName)
+        val rows = availability?.removed(user, packages)
+        availabilityChanged()
+        taskExecutor.accept(PackageTaskFactory.appsRemoved(user, packages, rows))
     }
 
     override fun onPackagesAvailable(
@@ -71,6 +79,7 @@ class ModelLauncherCallbacks(private var taskExecutor: Consumer<ModelUpdateTask>
         user: UserHandle,
         replacing: Boolean,
     ) {
+        availabilityChanged()
         taskExecutor.accept(PackageUpdatedTask(OP_UPDATE, user, *packageNames))
     }
 
@@ -84,6 +93,8 @@ class ModelLauncherCallbacks(private var taskExecutor: Consumer<ModelUpdateTask>
         replacing: Boolean,
     ) {
         if (!replacing) {
+            availability?.unavailable(user, packageNames.toSet())
+            availabilityChanged()
             taskExecutor.accept(PackageTaskFactory.appsUnavailable(user, packageNames.toSet()))
         }
     }
@@ -102,7 +113,8 @@ class ModelLauncherCallbacks(private var taskExecutor: Consumer<ModelUpdateTask>
 
     fun onPackagesRemoved(user: UserHandle, packages: List<String>) {
         FileLog.d(TAG, "package removed received " + TextUtils.join(",", packages))
-        taskExecutor.accept(PackageTaskFactory.appsRemoved(user, packages.toSet()))
+        // This helper is a lookup inference, not LauncherApps.onPackageRemoved.
+        taskExecutor.accept(PackageTaskFactory.appsRemovedByLookup(user, packages.toSet()))
     }
 
     override fun onSessionFailure(packageName: String, user: UserHandle) {

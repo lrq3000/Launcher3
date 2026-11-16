@@ -297,6 +297,8 @@ public class DatabaseHelper extends SQLiteOpenHelper implements
         try (SQLiteTransaction t = new SQLiteTransaction(db)) {
             dropTable(db, Favorites.TABLE_NAME);
             dropTable(db, "workspaceScreens");
+            // A fresh favorites database must not inherit tombstones for old, potentially reused item IDs.
+            dropTable(db, "workspace_availability_identity");
             onCreate(db);
             t.commit();
         }

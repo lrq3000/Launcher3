@@ -135,6 +135,24 @@ public class LoaderCursorTest {
     }
 
     @Test
+    public void missingFolderChild_retainsSavedTitleAndIcon() throws Exception {
+        mCursor.newRow().add(_ID, 42).add(PROFILE_ID, 0)
+                .add(ITEM_TYPE, ITEM_TYPE_APPLICATION).add(TITLE, "Saved label")
+                .add(CONTAINER, 123).add(ICON, sTestBlob);
+        assertTrue(mLoaderCursor.moveToNext());
+        ComponentName target = new ComponentName("missing.sd.app", "SavedActivity");
+        WorkspaceItemInfo info = Executors.MODEL_EXECUTOR.submit(() ->
+                mLoaderCursor.getAppShortcutInfo(new Intent().setComponent(target), true, true, false))
+                .get();
+
+        assertNotNull(info);
+        assertEquals("Saved label", info.title);
+        assertEquals(target, info.getTargetComponent());
+        assertFalse(mApp.getIconCache().isDefaultIcon(info.bitmap, info.user));
+        assertTrue((info.runtimeStatusFlags & WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) != 0);
+    }
+
+    @Test
     public void getAppShortcutInfo_dontAllowMissing_invalidComponent() {
         initCursor(ITEM_TYPE_APPLICATION, "");
         assertTrue(mLoaderCursor.moveToNext());

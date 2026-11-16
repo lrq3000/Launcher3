@@ -33,6 +33,11 @@ public final class AvailabilityStoreTest {
         store.observe(second, Storage.EXTERNAL, "card-A");
         store.observe(profile, Storage.INTERNAL, "internal");
         check(!store.shouldPreserve(profile), "Known internal app outside recovery keeps normal policy");
+        check(store.shouldPreserve(new Row("db-one", 11, 99, "sd.app/UnknownActivity")),
+                "Package history alone cannot classify a never-observed migration target");
+        store.classifyStorage(11, "sd.app", Storage.EXTERNAL, "card-B");
+        check(store.shouldPreserve(profile), "Current external association supersedes old internal history without requiring activity registration");
+        store.observe(profile, Storage.INTERNAL, "internal");
         store.unavailable(10, "sd.app");
         store = new WorkspaceAvailabilityStore(file.toFile());
         check(store.shouldPreserve(first), "Recovery survives process restart");
@@ -64,6 +69,23 @@ public final class AvailabilityStoreTest {
         store.observe(profile, Storage.INTERNAL, "internal");
         check(store.shouldPreserve(profile), "Failed persistence cannot authorize negative-lookup removal");
         check(store.getLastFailure() != null, "Persistence failure must remain diagnosable");
+        Path batchFile = root.resolve("batched.bin");
+        WorkspaceAvailabilityStore batch = new WorkspaceAvailabilityStore(batchFile.toFile());
+        batch.beginBatch();
+        batch.observe(profile, Storage.INTERNAL, "internal");
+        check(new WorkspaceAvailabilityStore(batchFile.toFile()).shouldPreserve(profile),
+                "Interrupted positive-observation batch leaves only conservative unknown history");
+        batch.endBatch();
+        check(!new WorkspaceAvailabilityStore(batchFile.toFile()).shouldPreserve(profile),
+                "Completed batch atomically commits positive storage history");
+        batch.beginBatch();
+        batch.protect(profile);
+        check(new WorkspaceAvailabilityStore(batchFile.toFile()).isRecovering(profile),
+                "Recovery evidence bypasses observation batching before process death");
+        batch.removed(List.of(profile));
+        check(new WorkspaceAvailabilityStore(batchFile.toFile()).isRemoved(profile),
+                "Confirmed removals bypass batching before favorites mutation");
+        batch.endBatch();
         System.out.println("PASS availability store: " + count + " behavioral assertions");
     }
 }
