@@ -6,6 +6,7 @@ public class WorkspaceItemInfo extends ItemInfoWithIcon {
     public static final int FLAG_SUPPORTS_WEB_UI = 1, DEFAULT = 0;
     public Intent intent;
     public int status;
+    public String availabilityGeneration = "";
     public boolean isPromise() { return status != 0; }
     public boolean hasStatusFlag(int flag) { return (status & flag) != 0; }
     public boolean isArchived() { return false; }

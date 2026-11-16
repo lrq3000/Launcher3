@@ -41,6 +41,14 @@ test_args = ["ShortcutReliabilityTest", str(OUT)]
 if "--finding" in sys.argv:
     test_args = ["ReviewRegressionTest", sys.argv[sys.argv.index("--finding") + 1], str(OUT)]
 subprocess.run([str(JAVA_HOME / "bin/java"), "-ea", "-cp", classpath, *test_args], check=True)
+sdk = Path(os.environ.get("ANDROID_SDK_ROOT", "C:/Users/33632/AppData/Local/Android/Sdk"))
+api_out = OUT / "android-api-check"
+api_out.mkdir()
+subprocess.run([str(JAVA_HOME / "bin/javac"), "-proc:none", "-encoding", "UTF-8",
+                "-cp", str(sdk / "platforms/android-35/android.jar"), "-d", str(api_out),
+                str(store), str(ROOT / "src/com/android/launcher3/model/availability/WorkspaceAvailabilityDb.java"),
+                str(HERE / "stubs/com/android/launcher3/LauncherSettings.java")], check=True)
+print("PASS SQLite birth helper: Android 35 API type check (not an AOSP build)")
 compiler_cp = os.pathsep.join([str(OUT), str(KOTLIN_HOME / "lib/*")])
 subprocess.run([str(JAVA_HOME / "bin/javac"), "-proc:none", "-cp", compiler_cp, "-d", str(OUT),
                 str(HERE / "tools/KotlinSyntaxCheck.java")], check=True)

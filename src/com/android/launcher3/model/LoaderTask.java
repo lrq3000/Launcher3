@@ -319,7 +319,7 @@ public class LoaderTask implements Runnable {
         }
 
         // Serialize the final binding boundary with durable package events. Merely stopping a loader after journaling leaves a gap between verifyNotStopped() and bindWorkspace().
-        synchronized (mModel.getWorkspaceAvailability()) {
+        try (var operation = mModel.getWorkspaceAvailability().beginOperation()) {
             verifyAvailabilityUnchanged();
             verifyNotStopped();
             mLauncherBinder.bindWorkspace(true /* incrementBindId */, /* isBindSync= */ false);
@@ -545,7 +545,7 @@ public class LoaderTask implements Runnable {
 
             mBgDataModel.updateStringCache(mContext);
 
-            synchronized (mModel.getWorkspaceAvailability()) {
+            try (var operation = mModel.getWorkspaceAvailability().beginOperation()) {
                 // Check before committing loader deletions as well as publishing repository data. A journaled event must not merely cancel binding after stale destructive decisions have already reached favorites.
                 verifyAvailabilityUnchanged();
                 var loadedItems = itemProcessor.finalizeData(mModelDelegate,

@@ -46,6 +46,8 @@ import com.android.launcher3.dagger.LauncherAppSingleton
 import com.android.launcher3.logging.FileLog
 import com.android.launcher3.model.GridMigrationOption.Companion.from
 import com.android.launcher3.model.GridSizeMigrationDBController.needsToMigrate
+import com.android.launcher3.model.availability.WorkspaceAvailabilityDb
+import com.android.launcher3.model.availability.WorkspaceAvailabilityStore.Row
 import com.android.launcher3.pm.UserCache
 import com.android.launcher3.provider.LauncherDbUtils.SQLiteTransaction
 import com.android.launcher3.provider.LauncherDbUtils.tableExists
@@ -75,29 +77,29 @@ internal constructor(
 
     private lateinit var openHelper: DatabaseHelper
 
-    /** A tiny companion table ties removal evidence to this database incarnation without changing or migrating favorites. */
-    @Synchronized
-    fun getAvailabilityIdentity(): String? {
-        return runCatching {
-                val table = getTable()
-                table.newTransaction().use { transaction ->
-                    table.execSQL("CREATE TABLE IF NOT EXISTS workspace_availability_identity (id INTEGER PRIMARY KEY CHECK (id=1), token TEXT NOT NULL)")
-                    table.execSQL("INSERT OR IGNORE INTO workspace_availability_identity VALUES (1, '${java.util.UUID.randomUUID()}')")
-                    val token =
-                        table.rawQuery("SELECT token FROM workspace_availability_identity WHERE id=1") {
-                            moveToFirst()
-                            getString(0)
-                        }
-                    transaction.commit()
-                    token
+    fun beginAvailabilityOperation() = WorkspaceAvailabilityDb.store(context).beginOperation()
+
+    fun getAvailabilityRow(id: Int, serial: Long, component: String): Row? =
+        beginAvailabilityOperation().use {
+            runCatching {
+                    createDbIfNotExists()
+                    WorkspaceAvailabilityDb.row(openHelper.writableDatabase, id, serial, component)
                 }
+                .onFailure { Log.w(TAG, "Cannot read favorite insertion identity; preserving shortcut", it) }
+                .getOrNull()
+        }
+
+    /** A tiny companion table ties removal evidence to this database incarnation without changing or migrating favorites. */
+    fun getAvailabilityIdentity(): String? = beginAvailabilityOperation().use {
+        runCatching {
+                createDbIfNotExists()
+                WorkspaceAvailabilityDb.identity(openHelper.writableDatabase)
             }
             .onFailure { Log.w(TAG, "Cannot identify workspace database; preserving shortcuts", it) }
             .getOrNull()
     }
 
-    @Synchronized
-    private fun createDbIfNotExists() {
+    private fun createDbIfNotExists() = beginAvailabilityOperation().use {
         if (!::openHelper.isInitialized) {
             // Initialize the restore task before opening the DB
             val restoreTask = RestoreDbTask.createRestoreTask(context)
@@ -144,9 +146,9 @@ internal constructor(
 
     /** Refer [SQLiteDatabase.insert] */
     @WorkerThread
-    fun insert(initialValues: ContentValues?): Int {
+    fun insert(initialValues: ContentValues?): Int = beginAvailabilityOperation().use {
         createDbIfNotExists()
-        return openHelper.insertAndCheck(openHelper.writableDatabase, initialValues)
+        openHelper.insertAndCheck(openHelper.writableDatabase, initialValues)
     }
 
     /** Refer [SQLiteDatabase.delete] */
@@ -178,9 +180,9 @@ internal constructor(
 
     /** Generates an id to be used for new item in the favorites table */
     @WorkerThread
-    fun generateNewItemId(): Int {
+    fun generateNewItemId(): Int = beginAvailabilityOperation().use {
         createDbIfNotExists()
-        return openHelper.generateNewItemId()
+        openHelper.generateNewItemId()
     }
 
     /** Generates an id to be used for new workspace screen */
@@ -193,7 +195,7 @@ internal constructor(
 
     /** Creates an empty DB clearing all existing data */
     @WorkerThread
-    fun createEmptyDB() {
+    fun createEmptyDB() = beginAvailabilityOperation().use {
         createDbIfNotExists()
         openHelper.createEmptyDB(openHelper.writableDatabase)
         prefs.putSync(emptyDbCreatedKey.to(true))
@@ -209,8 +211,14 @@ internal constructor(
     /** Returns a new [SQLiteTransaction] */
     @WorkerThread
     fun newTransaction(): SQLiteTransaction {
-        createDbIfNotExists()
-        return SQLiteTransaction(openHelper.writableDatabase)
+        val operation = beginAvailabilityOperation()
+        try {
+            createDbIfNotExists()
+            return SQLiteTransaction(openHelper.writableDatabase, operation)
+        } catch (e: Exception) {
+            operation.close()
+            throw e
+        }
     }
 
     /** Resets the launcher DB if we should reset it. */
@@ -250,6 +258,13 @@ internal constructor(
     /** Migrates the DB. If the migration failed, it clears the DB. */
     @Throws(Exception::class)
     fun attemptMigrateDb(
+        restoreEventLogger: LauncherRestoreEventLogger?,
+        modelDelegate: ModelDelegate,
+    ) = beginAvailabilityOperation().use {
+        attemptMigrateDbLocked(restoreEventLogger, modelDelegate)
+    }
+
+    private fun attemptMigrateDbLocked(
         restoreEventLogger: LauncherRestoreEventLogger?,
         modelDelegate: ModelDelegate,
     ) {
@@ -319,7 +334,7 @@ internal constructor(
     /** Returns the underlying [SQLiteTable] for making persistent model changes */
     fun getTable(): SQLiteTable {
         createDbIfNotExists()
-        return WriteProtectedSQLiteTable(openHelper.writableDatabase, TABLE_NAME)
+        return WriteProtectedSQLiteTable(openHelper.writableDatabase, TABLE_NAME, context)
     }
 
     private fun clearFlagEmptyDbCreated() {
@@ -336,8 +351,11 @@ internal constructor(
      * Returns true if default favorites was loaded, false if a valid data already exists
      */
     @WorkerThread
-    @Synchronized
-    fun loadDefaultFavoritesIfNecessary(): Boolean {
+    fun loadDefaultFavoritesIfNecessary(): Boolean = beginAvailabilityOperation().use {
+        loadDefaultFavoritesLocked()
+    }
+
+    private fun loadDefaultFavoritesLocked(): Boolean {
         createDbIfNotExists()
 
         if (prefs.get(emptyDbCreatedKey)) {

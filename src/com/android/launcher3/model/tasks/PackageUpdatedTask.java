@@ -111,16 +111,17 @@ public class PackageUpdatedTask implements ModelUpdateTask {
                     }
                 });
             }
-            List<LauncherActivityInfo> activities = appsList.updatePackage(
-                    context, packageName, mUser, protectedTargets);
-            activitiesLists.put(packageName, activities);
-            boolean hasUnresolvedTarget;
-            synchronized (dataModel) {
-                hasUnresolvedTarget = protectedTargets.stream().anyMatch(component ->
-                        activities.stream().noneMatch(activity -> activity.getComponentName().equals(component)));
-            }
+            List<LauncherActivityInfo> registered = context.getSystemService(LauncherApps.class)
+                    .getActivityList(packageName, mUser);
+            Set<ComponentName> registeredTargets = new HashSet<>();
+            registered.forEach(activity -> registeredTargets.add(activity.getComponentName()));
+            boolean hasUnresolvedTarget = protectedTargets.stream().anyMatch(component ->
+                    !registeredTargets.contains(component));
             // updateIconsForPkg deletes the entire durable package cache before rebuilding registered activities. An unresolved saved target may have its only valid icon in that cache, not in favorites.
             if (!hasUnresolvedTarget) iconCache.updateIconsForPkg(packageName, mUser);
+            // Keep healthy-package refresh before app-drawer binding, as in the normal update policy. The extra query above is deliberately read-only and cannot evict a saved target.
+            activitiesLists.put(packageName, appsList.updatePackage(
+                    context, packageName, mUser, protectedTargets));
         }
 
         taskController.bindApplicationsIfNeeded();

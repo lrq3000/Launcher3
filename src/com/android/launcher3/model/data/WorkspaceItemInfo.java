@@ -98,6 +98,9 @@ public class WorkspaceItemInfo extends ItemInfoWithIcon {
 
     public int status;
 
+    /** Immutable insertion incarnation carried to UI/drag copies; it is authoritative only when populated on the model worker. */
+    @NonNull public String availabilityGeneration = "";
+
     /**
      * A set of person's Id associated with the WorkspaceItemInfo, this is only used if the item
      * represents a deep shortcut.
@@ -118,6 +121,7 @@ public class WorkspaceItemInfo extends ItemInfoWithIcon {
         title = info.title;
         intent = new Intent(info.intent);
         status = info.status;
+        availabilityGeneration = info.availabilityGeneration;
         personKeys = info.personKeys.clone();
     }
 

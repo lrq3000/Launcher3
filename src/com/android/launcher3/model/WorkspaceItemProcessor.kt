@@ -119,7 +119,7 @@ class WorkspaceItemProcessor(
         try {
             when (c.itemType) {
                 Favorites.ITEM_TYPE_APPLICATION ->
-                    synchronized(c.workspaceAvailability) { processAppOrDeepShortcut() }
+                    c.workspaceAvailability.beginOperation().use { processAppOrDeepShortcut() }
                 Favorites.ITEM_TYPE_DEEP_SHORTCUT -> processAppOrDeepShortcut()
                 Favorites.ITEM_TYPE_FOLDER,
                 Favorites.ITEM_TYPE_APP_GROUP -> processFolderOrAppPair()
@@ -443,6 +443,7 @@ class WorkspaceItemProcessor(
                 iconRequestInfos.add(c.createIconRequestInfo(info, useLowResIcon))
             }
             c.applyCommonProperties(info)
+            if (ordinaryApp) info.availabilityGeneration = savedRow?.generation ?: ""
             info.intent = intent
             info.rank = c.rank
             info.spanX = 1

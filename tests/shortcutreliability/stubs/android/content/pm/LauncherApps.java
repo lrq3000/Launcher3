@@ -3,6 +3,8 @@ package android.content.pm;
 import android.os.UserHandle;
 public class LauncherApps {
     public boolean enabled;
+    public java.util.List<LauncherActivityInfo> activities = java.util.List.of();
+    public java.util.List<LauncherActivityInfo> getActivityList(String name, UserHandle user) { return activities; }
     public boolean isPackageEnabled(String name, UserHandle user) { return enabled; }
     public abstract static class Callback {
         public void onPackageAdded(String name, UserHandle user) {}

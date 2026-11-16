@@ -30,14 +30,15 @@ import com.android.launcher3.model.availability.WorkspaceAvailabilityStore.Row
 import com.android.launcher3.model.availability.WorkspaceAvailabilityStore.Storage
 import com.android.launcher3.model.data.WorkspaceItemInfo
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Model-owned durable evidence. All callers are background workers; no callbacks or global observers are owned here. */
 class WorkspaceAvailability(private val context: Context, private val db: ModelDbController) {
-    private var revision = 0L
-    private var failureReported = false
+    private val failureReported = AtomicBoolean()
 
-    @Synchronized
-    fun getRevision(): Long = revision
+    fun getRevision(): Long = store.revision
+
+    fun beginOperation() = store.beginOperation()
 
     private val store by lazy {
         WorkspaceAvailabilityStore.open(File(context.noBackupFilesDir, "workspace-availability-v1"))
@@ -49,9 +50,7 @@ class WorkspaceAvailability(private val context: Context, private val db: ModelD
 
     fun row(id: Int, serial: Long, component: ComponentName): Row? {
         if (serial < 0 || id < 0) return null
-        return db.getAvailabilityIdentity()?.let {
-            Row(it, serial, id, component.flattenToString())
-        }
+        return db.getAvailabilityRow(id, serial, component.flattenToString())
     }
 
     fun row(item: WorkspaceItemInfo): Row? =
@@ -60,7 +59,7 @@ class WorkspaceAvailability(private val context: Context, private val db: ModelD
                 item.id,
                 context.getSystemService(UserManager::class.java).getSerialNumberForUser(item.user),
                 it,
-            )
+            )?.also { row -> item.availabilityGeneration = row.generation }
         }
 
     fun shouldPreserve(row: Row?): Boolean = row == null || store.shouldPreserve(row)
@@ -113,21 +112,19 @@ class WorkspaceAvailability(private val context: Context, private val db: ModelD
 
     fun observe(item: WorkspaceItemInfo, activity: LauncherActivityInfo?) = observe(row(item), activity)
 
-    @Synchronized
-    fun unavailable(user: UserHandle, packages: Set<String>) {
+    fun unavailable(user: UserHandle, packages: Set<String>) = beginOperation().use {
         val serial = context.getSystemService(UserManager::class.java).getSerialNumberForUser(user)
-        if (serial < 0) return
-        revision++
+        if (serial < 0) return@use
         packages.forEach { store.unavailable(serial, it) }
         reportFailure()
     }
 
     /** Snapshot before enqueue/discard, including rows that the in-memory model has not loaded yet. */
-    @Synchronized
-    fun removed(user: UserHandle, packages: Set<String>): Set<Row> {
+    fun removed(user: UserHandle, packages: Set<String>): Set<Row> = beginOperation().use {
         val serial = context.getSystemService(UserManager::class.java).getSerialNumberForUser(user)
-        if (serial < 0) return emptySet()
-        revision++
+        if (serial < 0) return@use emptySet()
+        // The ordered fence is durable even if database identity or the following favorites query fails. New insertions reserve a later birth before their SQL transaction.
+        store.beginRemoval(serial, packages)
         val rows = mutableSetOf<Row>()
         try {
             forEachApplication { id, profile, intent, _ ->
@@ -142,12 +139,11 @@ class WorkspaceAvailability(private val context: Context, private val db: ModelD
         }
         store.removed(rows)
         reportFailure()
-        return rows
+        rows
     }
 
     /** Idempotent after process death between journal and favorites writes. No path reinserts rows. */
-    @Synchronized
-    fun reconcileRemovals(): Boolean {
+    fun reconcileRemovals(): Boolean = beginOperation().use {
         val removed = mutableListOf<Triple<Int, Long, String>>()
         forEachApplication { id, serial, intent, savedIntent ->
             val component = intent.component
@@ -163,7 +159,7 @@ class WorkspaceAvailability(private val context: Context, private val db: ModelD
             )
             changed = changed || deleted > 0
         }
-        return changed
+        changed
     }
 
     private fun forEachApplication(consumer: (Int, Long, Intent, String) -> Unit) {
@@ -182,12 +178,11 @@ class WorkspaceAvailability(private val context: Context, private val db: ModelD
             }
     }
 
-    @Synchronized
     private fun reportFailure() {
-        if (failureReported) return
         store.lastFailure?.let {
-            failureReported = true
-            Log.w("WorkspaceAvailability", "Availability metadata unavailable; preserving shortcuts", it)
+            if (failureReported.compareAndSet(false, true)) {
+                Log.w("WorkspaceAvailability", "Availability metadata unavailable; preserving shortcuts", it)
+            }
         }
     }
 }

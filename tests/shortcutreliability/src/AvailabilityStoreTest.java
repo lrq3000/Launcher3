@@ -69,6 +69,10 @@ public final class AvailabilityStoreTest {
         store.observe(profile, Storage.INTERNAL, "internal");
         check(store.shouldPreserve(profile), "Failed persistence cannot authorize negative-lookup removal");
         check(store.getLastFailure() != null, "Persistence failure must remain diagnosable");
+        boolean refusedInsertion = false;
+        try { store.nextInsertionGeneration(); }
+        catch (IllegalStateException expected) { refusedInsertion = true; }
+        check(refusedInsertion, "Insertion cannot proceed without a durable write-ahead birth identity");
         Path batchFile = root.resolve("batched.bin");
         WorkspaceAvailabilityStore batch = StoreFixtures.snapshot(batchFile.toFile());
         batch.beginBatch();

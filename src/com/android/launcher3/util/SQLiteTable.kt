@@ -16,12 +16,18 @@
 package com.android.launcher3.util
 
 import android.content.ContentValues
+import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
+import com.android.launcher3.model.availability.WorkspaceAvailabilityDb
 import com.android.launcher3.provider.LauncherDbUtils.SQLiteTransaction
 
 /** Wrapper over [SQLiteDatabase] to simplify some API calls and limit access */
-open class SQLiteTable(private val db: SQLiteDatabase, private val tableName: String) {
+open class SQLiteTable @JvmOverloads constructor(
+    private val db: SQLiteDatabase,
+    private val tableName: String,
+    private val context: Context? = null,
+) {
 
     fun query(
         columns: Array<String>?,
@@ -53,7 +59,7 @@ open class SQLiteTable(private val db: SQLiteDatabase, private val tableName: St
 
     fun execSQL(sql: String) = db.execSQL(sql)
 
-    fun newTransaction() = SQLiteTransaction(db)
+    fun newTransaction() = SQLiteTransaction(db, context?.let { WorkspaceAvailabilityDb.store(it).beginOperation() })
 
     open fun update(
         values: ContentValues,
@@ -70,15 +76,23 @@ open class SQLiteTable(private val db: SQLiteDatabase, private val tableName: St
     open fun delete(selection: String?, selectionArgs: Array<String>? = null): Int =
         db.delete(tableName, selection, selectionArgs)
 
-    open fun insert(values: ContentValues): Long = db.insert(tableName, null, values)
+    open fun insert(values: ContentValues): Long = insertWithBirth(values, SQLiteDatabase.CONFLICT_NONE)
 
     open fun insertOrReplace(values: ContentValues): Long =
-        db.insertWithOnConflict(tableName, null, values, SQLiteDatabase.CONFLICT_REPLACE)
+        insertWithBirth(values, SQLiteDatabase.CONFLICT_REPLACE)
+
+    private fun insertWithBirth(values: ContentValues, conflict: Int): Long =
+        if (context != null && tableName == com.android.launcher3.LauncherSettings.Favorites.TABLE_NAME)
+            WorkspaceAvailabilityDb.insert(context, db, tableName, values, conflict, null)
+        else db.insertWithOnConflict(tableName, null, values, conflict)
 }
 
 /** Extension of [SQLiteTable] which wraps various mutation methods with try-catch */
-open class WriteProtectedSQLiteTable(db: SQLiteDatabase, tableName: String) :
-    SQLiteTable(db, tableName) {
+open class WriteProtectedSQLiteTable @JvmOverloads constructor(
+    db: SQLiteDatabase,
+    tableName: String,
+    context: Context? = null,
+) : SQLiteTable(db, tableName, context) {
 
     override fun update(
         values: ContentValues,

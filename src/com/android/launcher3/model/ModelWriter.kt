@@ -87,6 +87,7 @@ open class ModelWriter(
                 item.onAddToDatabase(writer)
                 writer.put(Favorites._ID, item.id)
                 model.modelDbController.insert(writer.getValues(context))
+                if (item is WorkspaceItemInfo) model.workspaceAvailability.row(item)
             }
             synchronized(bgDataModel) {
                 for (item in items) {

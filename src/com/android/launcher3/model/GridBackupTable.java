@@ -67,9 +67,16 @@ public class GridBackupTable {
     /**
      * Copy valid grid entries from one table to another.
      */
-    private static void copyTable(SQLiteDatabase db, String from, String to, long userSerial) {
-        dropTable(db, to);
-        Favorites.addTableToDb(db, userSerial, false, to);
-        db.execSQL("INSERT INTO " + to + " SELECT * FROM " + from);
+    private void copyTable(SQLiteDatabase db, String from, String to, long userSerial) {
+        try (var operation = com.android.launcher3.model.availability.WorkspaceAvailabilityDb
+                .store(mContext).beginOperation();
+                var transaction = new com.android.launcher3.provider.LauncherDbUtils.SQLiteTransaction(db)) {
+            dropTable(db, to);
+            Favorites.addTableToDb(db, userSerial, false, to);
+            db.execSQL("INSERT INTO " + to + " SELECT * FROM " + from);
+            com.android.launcher3.model.availability.WorkspaceAvailabilityDb.copyBirths(
+                    mContext, db, from, db, to);
+            transaction.commit();
+        }
     }
 }

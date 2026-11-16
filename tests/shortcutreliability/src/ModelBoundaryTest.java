@@ -41,12 +41,14 @@ public final class ModelBoundaryTest {
 
         context.apps.enabled = true;
         apps.activities = List.of(new LauncherActivityInfo(new ComponentName("sd.app", "Other")));
+        context.apps.activities = apps.activities;
         new PackageUpdatedTask(PackageUpdatedTask.OP_UPDATE, user, "sd.app").execute(controller, data, apps);
         check(saved.intent.toUri(0).equals("sd.app/Saved"), "Another target must not replace saved intent");
         check((saved.runtimeStatusFlags & ItemInfoWithIcon.FLAG_DISABLED_NOT_AVAILABLE) != 0, "Another target must not recover saved activity");
 
         saved.runtimeStatusFlags |= ItemInfoWithIcon.FLAG_DISABLED_SUSPENDED;
         apps.activities = List.of(new LauncherActivityInfo(saved.getTargetComponent()));
+        context.apps.activities = apps.activities;
         new PackageUpdatedTask(PackageUpdatedTask.OP_UPDATE, user, "sd.app").execute(controller, data, apps);
         check(data.itemsIdMap.size() == 1 && data.itemsIdMap.get(0) == saved && saved.id == 42, "Exact recovery keeps same identity and no duplicate");
         check(saved.cellX == 2 && saved.cellY == 3 && saved.rank == 4, "Recovery preserves placement and rank");
@@ -68,7 +70,8 @@ public final class ModelBoundaryTest {
                 model.availability.removed(user, Set.of("sd.app"));
         WorkspaceItemInfo replacement = item(43, user, "sd.app", "Saved");
         data.itemsIdMap.add(replacement);
-        db.rows.add(new Object[] {43, 10L, "sd.app/Saved"});
+        db.insertNew(com.android.launcher3.model.availability.WorkspaceAvailabilityStore.open(
+                context.noBackupFilesDir.toPath().resolve("workspace-availability-v1").toFile()), 43, 10L, "sd.app/Saved");
         PackageTaskFactory.INSTANCE.appsRemoved(user, Set.of("sd.app"), snapshot).execute(controller, data, apps);
         check(!data.itemsIdMap.contains(saved) && data.itemsIdMap.contains(replacement), "Queued confirmed uninstall cannot delete later row");
 
@@ -87,7 +90,8 @@ public final class ModelBoundaryTest {
         callbacks = new ModelLauncherCallbacks(task -> {}, model.availability, () -> kotlin.Unit.INSTANCE);
         callbacks.onPackageRemoved("sd.app", user);
         callbacks.onPackageAdded("sd.app", user);
-        db.rows.add(new Object[] {44, 10L, "sd.app/Saved"});
+        db.insertNew(com.android.launcher3.model.availability.WorkspaceAvailabilityStore.open(
+                context.noBackupFilesDir.toPath().resolve("workspace-availability-v1").toFile()), 44, 10L, "sd.app/Saved");
         model.availability = new WorkspaceAvailability(context, db);
         model.availability.reconcileRemovals();
         check(db.rows.size() == 2 && db.rows.stream().anyMatch(row -> row[0].equals(44)),

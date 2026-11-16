@@ -6,11 +6,26 @@ public class ModelDbController {
     public final List<Object[]> rows = new ArrayList<>();
     public String identity = "database-one";
     public boolean queriesAllowed = true;
+    public boolean failSnapshots;
+    public boolean identityAvailable = true;
+    public final Map<Integer, String> births = new HashMap<>();
+    public com.android.launcher3.model.availability.WorkspaceAvailabilityStore.Row getAvailabilityRow(
+            int id, long serial, String component) {
+        if (!identityAvailable) return null;
+        return new com.android.launcher3.model.availability.WorkspaceAvailabilityStore.Row(
+                getAvailabilityIdentity(), serial, id, component, births.getOrDefault(id, ""));
+    }
+    public void insertNew(com.android.launcher3.model.availability.WorkspaceAvailabilityStore store,
+            int id, long serial, String component) {
+        births.put(id, store.nextInsertionGeneration());
+        rows.add(new Object[] {id, serial, component});
+    }
     public String getAvailabilityIdentity() {
         if (!queriesAllowed) throw new AssertionError("Database query after worker phase");
         return identity;
     }
     public Cursor query(String[] columns, String selection, String[] args, String sortOrder) {
+        if (failSnapshots) throw new IllegalStateException("Transient favorites query failure");
         if (!selection.equals("itemType=? AND restored=0") || !Arrays.equals(args, new String[] {"0"})) {
             throw new AssertionError("Incorrect favorites snapshot selection");
         }
