@@ -69,4 +69,24 @@ fun main(args: Array<String>) {
     }
     println("PASS real ModelWriter: handled legacy failure, retry, atomic batch, SQL rejection, commit failure")
     println("PASS real birth helper: folders, widgets and deep shortcuts insert with journal unwritable")
+    val uiTasks = ArrayDeque<Runnable>()
+    val delivery = com.android.launcher3.ui.DefaultLauncherUiStateNotifier(Executor { uiTasks.add(it) }, data, false, model)
+    var delivered = 0
+    delivery.addCallback(object : BgDataModel.Callbacks {
+        override fun bindItemsAdded(items: List<ItemInfo>) { delivered += items.size }
+        override fun bindItemsUpdated(items: Set<ItemInfo>) { delivered += items.size }
+    })
+    delivery.notifyModelChanged(IModelWriter.ChangeLog(itemsAdded = mutableListOf(item)), null)
+    delivery.notifyItemModifiedOptimistically(item)
+    data.bindingGuard.beginRemoval()
+    data.bindingGuard.finishRemoval()
+    data.itemsIdMap.bindingToken = data.bindingGuard.capture()
+    context.servicesAllowed = false
+    while (uiTasks.isNotEmpty()) uiTasks.removeFirst().run()
+    check(delivered == 0) { "Queued notifier adopted a new generation at UI delivery" }
+    delivery.notifyModelChanged(IModelWriter.ChangeLog(itemsAdded = mutableListOf(item)), null)
+    delivery.notifyItemModifiedOptimistically(item)
+    while (uiTasks.isNotEmpty()) uiTasks.removeFirst().run()
+    check(delivered == 2)
+    println("PASS real notifier delivery: old model/optimistic callbacks rejected; fresh query-free callbacks finish")
 }

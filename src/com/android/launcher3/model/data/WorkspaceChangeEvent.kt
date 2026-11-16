@@ -19,12 +19,16 @@ package com.android.launcher3.model.data
 import com.android.launcher3.model.BgDataModel.ModificationSource
 import com.android.launcher3.model.BgDataModel.ModificationSource.ModelTask
 import com.android.launcher3.model.BgDataModel.ModificationSource.UISurface
+import com.android.launcher3.model.WorkspaceBindingGuard
 import com.android.launcher3.views.ActivityContext
 import java.lang.ref.WeakReference
 import java.util.function.Predicate
 
 /** Represents a change being made to the existing [WorkspaceData] */
-sealed class WorkspaceChangeEvent(actualOwner: ModificationSource) {
+sealed class WorkspaceChangeEvent(
+    actualOwner: ModificationSource,
+    val bindingToken: WorkspaceBindingGuard.Token = WorkspaceBindingGuard().capture(),
+) {
 
     private val ownerRef = WeakReference(actualOwner)
 
@@ -36,12 +40,18 @@ sealed class WorkspaceChangeEvent(actualOwner: ModificationSource) {
     fun isSource(surface: ActivityContext) = (ownerRef.get() as? UISurface)?.surface == surface
 
     /** New items were added to the model */
-    class AddEvent(val items: List<ItemInfo>, owner: ModificationSource) :
-        WorkspaceChangeEvent(owner)
+    class AddEvent @JvmOverloads constructor(
+        val items: List<ItemInfo>,
+        owner: ModificationSource,
+        token: WorkspaceBindingGuard.Token = WorkspaceBindingGuard().capture(),
+    ) : WorkspaceChangeEvent(owner, token)
 
     /** Some properties of existing items changed */
-    class UpdateEvent(val items: Set<ItemInfo>, owner: ModificationSource) :
-        WorkspaceChangeEvent(owner)
+    class UpdateEvent @JvmOverloads constructor(
+        val items: Set<ItemInfo>,
+        owner: ModificationSource,
+        token: WorkspaceBindingGuard.Token = WorkspaceBindingGuard().capture(),
+    ) : WorkspaceChangeEvent(owner, token)
 
     /**
      * Some items were removed from the model. Note that the event uses a [Predicate] instead of
@@ -54,5 +64,8 @@ sealed class WorkspaceChangeEvent(actualOwner: ModificationSource) {
      * Indicates a full refresh of data causing the UI surface to rebind their UI. Since a full
      * refresh is not meant to be skipped, source is always treated as [ModelTask].
      */
-    class FullRefresh(val reason: String) : WorkspaceChangeEvent(ModelTask)
+    class FullRefresh @JvmOverloads constructor(
+        val reason: String,
+        val snapshot: WorkspaceData? = null,
+    ) : WorkspaceChangeEvent(ModelTask, snapshot?.bindingToken ?: WorkspaceBindingGuard().capture())
 }

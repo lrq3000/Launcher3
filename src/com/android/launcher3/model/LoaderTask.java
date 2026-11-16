@@ -178,6 +178,7 @@ public class LoaderTask implements Runnable {
     private final Set<PackageUserKey> mPendingPackages = new HashSet<>();
     private String mDbName;
     private long mAvailabilityRevision;
+    public final WorkspaceBindingGuard.Token bindingToken;
     private final Provider<FolderNameProvider> mFolderNameProviderFactory;
     private final Provider<LauncherRestoreEventLogger> mRestoreEventLoggerProvider;
     private final WorkspaceItemSpaceFinder mWorkspaceItemSpaceFinder;
@@ -226,6 +227,7 @@ public class LoaderTask implements Runnable {
         mIsSafeModeEnabled = isSafeModeEnabled;
         mBgAllAppsList = bgAllAppsList;
         mBgDataModel = bgModel;
+        bindingToken = bgModel.bindingGuard.capture();
         mModelDelegate = model.getModelDelegate();
         mLauncherBinder = launcherBinder;
         mLoaderCursorFactory = loaderCursorFactory;
@@ -318,7 +320,7 @@ public class LoaderTask implements Runnable {
             logASplit("sanitizeData finished");
         }
 
-        // Serialize the final binding boundary with durable package events. Merely stopping a loader after journaling leaves a gap between verifyNotStopped() and bindWorkspace().
+        // Serialize worker-side snapshot scheduling with durable events. The snapshot's immutable binding token separately fences actual asynchronous UI delivery, not just this method invocation.
         try (var operation = mModel.getWorkspaceAvailability().beginOperation()) {
             verifyAvailabilityUnchanged();
             verifyNotStopped();
@@ -554,12 +556,15 @@ public class LoaderTask implements Runnable {
                     mBrowserIconMigratorFactory.createBrowserIconMigrator(loadedItems,
                             mModelTaskController.getModelWriter()).performMigration();
                 }
-                mBgDataModel.dataLoadComplete(loadedItems, name /* reason */);
+                mBgDataModel.dataLoadComplete(loadedItems, name /* reason */, bindingToken);
             }
         }
     }
 
     private void verifyAvailabilityUnchanged() {
+        if (!bindingToken.isCurrent()) {
+            throw new CancellationException("Confirmed uninstall invalidated workspace snapshot");
+        }
         if (mAvailabilityRevision != mModel.getWorkspaceAvailability().getRevision()) {
             throw new CancellationException("Package availability changed during workspace load");
         }

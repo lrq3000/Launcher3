@@ -13,7 +13,7 @@ Run `python tests/shortcutreliability/run_tests.py --baseline-receiver` to repro
 - `AppInfo` is a boundary double reproducing the documented clearing of suspension in its runtime-flag refresh, so the real update task's independent-state preservation is exercised. The in-memory model applies predicates and retains objects, but does not implement production SQLite transactions, repository publication, loader scheduling, or UI binding.
 - The installed Kotlin parser checks edited Kotlin syntax separately. This is not full AOSP type checking.
 - The new SQLite birth helper is separately compiled against the actual Android 35 SDK jar and production journal, with only LauncherSettings constants supplied by a fixture. This catches API/type mistakes in that Java helper, not SQLite transaction/runtime behavior.
-- The default command now also invokes `run_writer_tests.py`. This compiles and executes the REAL ModelWriter/IModelWriter, WorkspaceAvailabilityDb/Store, AddWorkspaceItemsTask and ItemInstallQueue. The `writer/stubs` override only explicit dependencies of those consumers and reuse common fixtures otherwise. Nested SQL transaction/commit behavior, Android/model publication, queue serialization, and thread executors are boundaries, not production implementations. Journal failures and repair use real filesystem operations. The queue fixture uses a simple real file, not Android XML/AtomicFile.
+- The default command now also invokes `run_writer_tests.py`. This compiles and executes the REAL ModelWriter/IModelWriter, WorkspaceAvailabilityDb/Store, AddWorkspaceItemsTask, ItemInstallQueue, complete DefaultLauncherUiStateNotifier and WorkspaceBindingGuard. The `writer/stubs` override only explicit dependencies of those consumers and reuse common fixtures otherwise. Nested SQL transaction/commit behavior, Android/model publication, queue serialization, and thread executors are boundaries, not production implementations. Journal failures and repair use real filesystem operations. The queue fixture uses a simple real file, not Android XML/AtomicFile.
 
 ## Insertion consumer failure regression
 
@@ -26,7 +26,21 @@ Historical RED replays, each expected to exit 1:
 
 Replays never reset/edit the worktree. Generated writer classes, baseline copies, queue files and retained failure blockers remain under `%LOCALAPPDATA%/Temp/opencode/launcher3-writer-tests-*` for manual cleanup.
 
-## Review-case boundaries
+## Receipt-time binding delivery regression
+
+Run `python tests/shortcutreliability/run_binding_tests.py` for the new subset; the default runner includes it. `--baseline-binding` replays exact reviewed 07b2 source in temporary storage and is EXPECTED to exit 1 with `legacy/blocked-ui delivered a removed item from an old async snapshot after receipt`. It never resets or edits the worktree.
+
+Add `--mode simplified` or `--mode repository` to the baseline command to reproduce those delivery modes independently; each is also expected to fail on the removed-item delivery assertion.
+
+The runner compiles and executes the complete production BaseLauncherBinder, WorkspaceData and WorkspaceBindingGuard. It extracts bindCompleteModelAsync, thenOn and bindModelWithAsyncInflation VERBATIM from root-package ModelCallbacks into `CallbacksShell.kt.txt`, and LauncherModel.LoaderTransaction.commit into `LoaderCompletionShell.kt.txt`. The shells replace surrounding UI/lifetime helpers, NOT the guard or async delivery decisions. Twelve deterministic cases cover legacy, simplified and repository-style shared async delivery across blocked UI, in-flight inflation, deferred pages and late old entry/new binder ID allocation. Each requires a fresh positive bind to finish healthy items. The Context boundary forbids services; guard code performs no database/service lookup. Receipt/journal snapshots and overlapping receipts are additionally tested, as are stale versus fresh actual loader-commit queue resumes.
+
+The main receiver/store/model harness separately executes real ModelLauncherCallbacks ordering with a failing snapshot: receipt closes the barrier before any query, recording releases it and requests replacement afterward, and temporary unavailability does not invalidate bindings.
+
+The writer subset additionally compiles and executes the complete actual DefaultLauncherUiStateNotifier, not a notifier shell. Queued model-change and optimistic-update callbacks retain their original token and remain rejected even after the dataset receives a fresh token; fresh callbacks then succeed with Context service access forbidden. The model/callback ownership and executor are explicit boundaries, so this does not establish native notifier lifecycle or full BgDataModel/LauncherModel typing.
+
+This is deliberately NOT full root ModelCallbacks/LauncherModel compilation or Android rendering: inflater/views, ViewOnDrawExecutor, repository collector subscription, native scheduling and loader lifetime remain explicit boundaries. The repository cases run the production shared async method, not a real Android collector. The added canonical actual binder/default UI callback/LauncherModel receipt test is UNRUN. Generated classes, extracted source and stores remain under `%LOCALAPPDATA%/Temp/opencode/launcher3-binding-tests-*` for manual cleanup.
+
+## Original review-case boundaries
 
 1. Reuse the same item ID/component with production durable insertion generation; reopen the journal and retain the old tombstone without applying it to the new incarnation. The real allocator/SQLite close/reopen case is a separate unrun canonical test.
 2. Interleave two real adapter owners, a positive-observation batch, and a confirmed removal at one canonical journal path; inspect a fresh disk snapshot afterward. Constructor reflection exists only in test utilities; production owners cannot bypass the factory.
@@ -37,7 +51,7 @@ Replays never reset/edit the worktree. Generated writer classes, baseline copies
 
 ## What this cannot establish
 
-These are narrow executable policy/task-boundary tests, not platform, UI, device, emulator, Android SQLite integration, or end-to-end validation. Full loader, favorites appearance serialization, database identity/reset/insertion/copy atomicity, native concurrency, model-writer/queue lifecycle and failure handling, actual callback/volume semantics, and both binding implementations require the canonical AOSP tests and a platform build. The 18 added `tests/multivalentTests` regressions are included by `launcher-tests-src` and cover real SQLite/loader/cache/writer/queue behavior, but have not been run in the standalone Windows checkout. No full AOSP application type-check/build claim follows from the limited SDK API compilation.
+These are narrow executable policy/task-boundary tests, not platform, UI, device, emulator, Android SQLite integration, or end-to-end validation. Full loader, favorites appearance serialization, database identity/reset/insertion/copy atomicity, native concurrency, model-writer/queue lifecycle and failure handling, actual callback/volume semantics, and complete binding/repository implementations require canonical AOSP tests and a platform build. The 19 added canonical regressions are included by `launcher-tests-src`, but ALL REMAIN UNRUN. No full AOSP application type-check/build claim follows from limited SDK API compilation or extracted async-method execution. Current default syntax parsing covers 34 edited Kotlin files.
 
 Legacy failed manual additions are logged and reloaded, not durably retried; queue failures retry on a later queue/resume event rather than a timer. A crash between favorite commit and queue retirement remains an exactly-once validation limit, particularly for specialized item types. This is not a generic undo framework for arbitrary caller-owned item mutations or widget-host side effects.
 

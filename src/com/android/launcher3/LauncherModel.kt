@@ -47,6 +47,7 @@ import com.android.launcher3.model.tasks.PackageUpdatedTask
 import com.android.launcher3.pm.UserCache
 import com.android.launcher3.util.DaggerSingletonTracker
 import com.android.launcher3.util.Executors.MODEL_EXECUTOR
+import com.android.launcher3.util.Executors.MAIN_EXECUTOR
 import com.android.launcher3.util.PackageUserKey
 import com.android.launcher3.views.ActivityContext
 import java.io.PrintWriter
@@ -154,12 +155,19 @@ constructor(
     }
 
     fun newModelCallbacks() =
-        ModelLauncherCallbacks(this::enqueueModelUpdateTask, workspaceAvailability) {
-            // Consequential callbacks are journaled before this point, off the model thread. Only restart an in-flight loader; an already loaded model must update the existing WorkspaceItemInfo in place.
+        ModelLauncherCallbacks(this::enqueueModelUpdateTask, workspaceAvailability, availabilityChanged = {
+            // Temporary availability callbacks are journaled off the model thread. Preserve loaded item identity; confirmed uninstall has a separate receipt/replacement path below.
             synchronized(mLock) {
                 if (mLoaderTask != null) forceReload("package-availability-event")
             }
-        }
+        }, removalReceived = {
+            // Invalidate before journal queries or acquiring model/SQL locks, even when UI inflation is already queued and the loader has finished.
+            mBgDataModel.bindingGuard.beginRemoval()
+        }, removalRecorded = {
+            mBgDataModel.bindingGuard.finishRemoval()
+            // Cancelling the old generation also cancels healthy pending pages. Always arrange their replacement from reconciled favorites, not merely an in-flight-loader restart.
+            forceReload("confirmed-package-removal")
+        })
 
     fun getWriter(
         verifyChanges: Boolean,
@@ -265,8 +273,12 @@ constructor(
                 launcherBinder.bindAllApps()
                 launcherBinder.bindWidgets()
 
-                if (Flags.simplifiedLauncherModelBinding())
-                    installQueue.resumeModelPush(ItemInstallQueue.FLAG_LOADER_RUNNING)
+                if (Flags.simplifiedLauncherModelBinding()) {
+                    val token = mBgDataModel.itemsIdMap.bindingToken
+                    MAIN_EXECUTOR.execute {
+                        token.runIfCurrent { installQueue.resumeModelPush(ItemInstallQueue.FLAG_LOADER_RUNNING) }
+                    }
+                }
                 return CompletableFuture.completedFuture(Unit)
             } else {
                 val task = loaderFactory.newLoaderTask(callerName, launcherBinder)
@@ -309,15 +321,20 @@ constructor(
         }
 
         fun commit() {
-            synchronized(mLock) {
+            val token = mTask?.bindingToken ?: return
+            val committed = synchronized(mLock) {
                 // Everything loaded bind the data.
-                if (mLoaderTask === mTask) {
+                if (mLoaderTask === mTask && token.isCurrent) {
                     mModelLoaded = true
                     mIsCommitted = true
+                    true
+                } else false
+            }
+            if (committed && Flags.simplifiedLauncherModelBinding()) {
+                MAIN_EXECUTOR.execute {
+                    token.runIfCurrent { installQueue.resumeModelPush(ItemInstallQueue.FLAG_LOADER_RUNNING) }
                 }
             }
-            if (Flags.simplifiedLauncherModelBinding())
-                installQueue.resumeModelPush(ItemInstallQueue.FLAG_LOADER_RUNNING)
         }
 
         override fun close() {

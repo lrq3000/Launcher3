@@ -1,0 +1,17 @@
+/* Copyright (C) 2026 The Android Open Source Project; SPDX-License-Identifier: Apache-2.0 */
+package com.android.launcher3
+import com.android.launcher3.model.WorkspaceBindingGuard
+import com.android.launcher3.model.ItemInstallQueue
+import com.android.launcher3.util.Executors.MAIN_EXECUTOR
+
+/** Only loader state/lifetime is a boundary. commit() is extracted verbatim from LauncherModel.LoaderTransaction. */
+class ExtractedLoaderCompletion(token: WorkspaceBindingGuard.Token) {
+    class Task(val bindingToken: WorkspaceBindingGuard.Token)
+    private val mLock = Any()
+    private val mTask: Task? = Task(token)
+    private val mLoaderTask = mTask
+    private var mModelLoaded = false
+    private var mIsCommitted = false
+    private val installQueue = ItemInstallQueue()
+    // PRODUCTION_COMMIT
+}

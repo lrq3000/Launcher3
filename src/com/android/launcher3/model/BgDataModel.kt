@@ -79,7 +79,8 @@ constructor(
     lifeCycle: DaggerSingletonTracker,
 ) : LauncherDumpable {
 
-    private val mutableWorkspaceData = MutableWorkspaceData()
+    @JvmField val bindingGuard = WorkspaceBindingGuard()
+    private val mutableWorkspaceData = MutableWorkspaceData(bindingGuard.capture())
 
     /**
      * Map of all the ItemInfos (shortcuts, folders, widgets and predicted items) created by
@@ -175,7 +176,10 @@ constructor(
         if (Flags.modelRepository()) {
             repo
                 .get()
-                .dispatchWorkspaceDataChange(mutableWorkspaceData.copy(), AddEvent(items, owner))
+                .dispatchWorkspaceDataChange(
+                    mutableWorkspaceData.copy(),
+                    AddEvent(items, owner, mutableWorkspaceData.bindingToken),
+                )
         }
         items
             .filter { it.itemType == ITEM_TYPE_DEEP_SHORTCUT }
@@ -192,7 +196,7 @@ constructor(
                 .get()
                 .dispatchWorkspaceDataChange(
                     mutableWorkspaceData.copy(),
-                    UpdateEvent(setOf(item), owner),
+                    UpdateEvent(setOf(item), owner, mutableWorkspaceData.bindingToken),
                 )
         }
     }
@@ -205,21 +209,27 @@ constructor(
                 .get()
                 .dispatchWorkspaceDataChange(
                     mutableWorkspaceData.copy(),
-                    UpdateEvent(items.toSet(), owner),
+                    UpdateEvent(items.toSet(), owner, mutableWorkspaceData.bindingToken),
                 )
         }
     }
 
     @Synchronized
-    fun dataLoadComplete(allItems: SparseArray<ItemInfo>, reason: String) {
-        mutableWorkspaceData.replaceDataMap(allItems)
+    @JvmOverloads
+    fun dataLoadComplete(
+        allItems: SparseArray<ItemInfo>,
+        reason: String,
+        token: WorkspaceBindingGuard.Token = bindingGuard.capture(),
+    ) {
+        mutableWorkspaceData.replaceDataMap(allItems, token)
         dispatchRebind(reason)
     }
 
     @Synchronized
     fun dispatchRebind(reason: String) {
         if (Flags.modelRepository()) {
-            repo.get().dispatchWorkspaceDataChange(mutableWorkspaceData.copy(), FullRefresh(reason))
+            val snapshot = mutableWorkspaceData.copy()
+            repo.get().dispatchWorkspaceDataChange(snapshot, FullRefresh(reason, snapshot))
         }
     }
 
@@ -415,11 +425,16 @@ constructor(
         /**
          * Does a complete model rebind. The callback can be called on any thread and it is up to
          * the client to move the executor to appropriate thread
+         *
+         * Overrides must carry itemIdMap.bindingToken through every deferred delivery; allocating a new token at bind entry would authorize an old snapshot after uninstall receipt.
          */
         // Migrated to repository
         @AnyThread
         fun bindCompleteModelAsync(itemIdMap: WorkspaceData, isBindingSync: Boolean) {
-            Executors.MAIN_EXECUTOR.execute { bindCompleteModel(itemIdMap, isBindingSync) }
+            val token = itemIdMap.bindingToken
+            Executors.MAIN_EXECUTOR.execute {
+                token.runIfCurrent { bindCompleteModel(itemIdMap, isBindingSync) }
+            }
         }
 
         // Migrated to repository

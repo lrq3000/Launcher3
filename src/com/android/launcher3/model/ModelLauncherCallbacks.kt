@@ -41,10 +41,12 @@ import java.util.function.Consumer
  * Implementation of {@link LauncherApps#Callbacks} which converts various events to corresponding
  * model tasks
  */
-class ModelLauncherCallbacks(
+class ModelLauncherCallbacks @JvmOverloads constructor(
     private var taskExecutor: Consumer<ModelUpdateTask>,
     private val availability: WorkspaceAvailability? = null,
     private val availabilityChanged: () -> Unit = {},
+    private val removalReceived: () -> Unit = {},
+    private val removalRecorded: () -> Unit = availabilityChanged,
 ) :
     LauncherApps.Callback(), InstallSessionTracker.Callback {
 
@@ -67,10 +69,15 @@ class ModelLauncherCallbacks(
     }
 
     override fun onPackageRemoved(packageName: String, user: UserHandle) {
+        removalReceived()
         FileLog.d(TAG, "onPackageRemoved triggered for packageName=$packageName, user=$user")
         val packages = setOf(packageName)
-        val rows = availability?.removed(user, packages)
-        availabilityChanged()
+        val rows = try {
+            availability?.removed(user, packages)
+        } finally {
+            // Release the receipt barrier and arrange a fresh load even if metadata work fails. Never leave healthy pages permanently invalidated.
+            removalRecorded()
+        }
         taskExecutor.accept(PackageTaskFactory.appsRemoved(user, packages, rows))
     }
 

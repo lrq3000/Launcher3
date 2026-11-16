@@ -21,6 +21,7 @@ import androidx.core.util.putAll
 import androidx.core.util.valueIterator
 import com.android.launcher3.LauncherSettings.Favorites.CONTAINER_DESKTOP
 import com.android.launcher3.Workspace
+import com.android.launcher3.model.WorkspaceBindingGuard
 import com.android.launcher3.util.IntArray
 import com.android.launcher3.util.IntSet
 import java.util.concurrent.atomic.AtomicInteger
@@ -53,6 +54,9 @@ sealed class WorkspaceData : Iterable<ItemInfo> {
     /** Number of times, this data has been modified */
     abstract val modificationId: Int
 
+    /** Provenance of the data read, never a fresh token allocated at UI bind entry. */
+    abstract val bindingToken: WorkspaceBindingGuard.Token
+
     /**
      * Returns the predicted items for the provided [containerId] or an empty list id no such
      * container exists
@@ -71,7 +75,12 @@ sealed class WorkspaceData : Iterable<ItemInfo> {
     }
 
     /** A mutable implementation of [WorkspaceData] */
-    class MutableWorkspaceData : WorkspaceData() {
+    class MutableWorkspaceData @JvmOverloads constructor(
+        initialBindingToken: WorkspaceBindingGuard.Token = WorkspaceBindingGuard().capture(),
+    ) : WorkspaceData() {
+
+        override var bindingToken = initialBindingToken
+            private set
 
         val itemsIdMap = SparseArray<ItemInfo>()
 
@@ -84,11 +93,16 @@ sealed class WorkspaceData : Iterable<ItemInfo> {
         override fun get(id: Int): ItemInfo? = itemsIdMap.get(id)
 
         /** Replaces the existing dataset with [items] */
-        fun replaceDataMap(items: SparseArray<ItemInfo>) {
+        @JvmOverloads
+        fun replaceDataMap(
+            items: SparseArray<ItemInfo>,
+            token: WorkspaceBindingGuard.Token = bindingToken,
+        ) {
             itemsIdMap.clear()
             itemsIdMap.putAll(items)
             version = VERSION_COUNTER.incrementAndGet()
             modificationId = 0
+            bindingToken = token
         }
 
         /** Performs some modification on the dataset and updates the [modificationId] */
@@ -98,14 +112,15 @@ sealed class WorkspaceData : Iterable<ItemInfo> {
         }
 
         override fun copy(): WorkspaceData =
-            ImmutableWorkspaceData(version, modificationId, itemsIdMap)
+            ImmutableWorkspaceData(version, modificationId, itemsIdMap, bindingToken)
     }
 
     /** An immutable implementation of [WorkspaceData] */
-    class ImmutableWorkspaceData(
+    class ImmutableWorkspaceData @JvmOverloads constructor(
         override val version: Int,
         override val modificationId: Int,
         items: SparseArray<ItemInfo>,
+        override val bindingToken: WorkspaceBindingGuard.Token = WorkspaceBindingGuard().capture(),
     ) : WorkspaceData() {
 
         private val itemsIdMap = items.clone()

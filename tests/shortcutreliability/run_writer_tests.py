@@ -15,9 +15,11 @@ OUT = Path(tempfile.mkdtemp(prefix="launcher3-writer-tests-", dir=Path(os.enviro
 overrides = HERE / "writer/stubs"
 sources = [p for p in (HERE / "stubs").rglob("*.java") if not (overrides / p.relative_to(HERE / "stubs")).exists() and p.name != "ItemInstallQueue.java"]
 sources += list(overrides.rglob("*.java"))
+sources = [p for p in sources if p.name != "DefaultLauncherUiStateNotifier.java"]
+sources.append(ROOT / "src/com/android/launcher3/model/WorkspaceBindingGuard.java")
 sources += [ROOT / f"src/com/android/launcher3/model/availability/{name}.java" for name in ("WorkspaceAvailabilityStore", "WorkspaceAvailabilityDb")]
 sources += [ROOT / "src/com/android/launcher3/model/tasks/AddWorkspaceItemsTask.java", ROOT / "src/com/android/launcher3/model/ItemInstallQueue.java"]
-kotlin = [ROOT / f"src/com/android/launcher3/{name}.kt" for name in ("model/ModelWriter", "model/IModelWriter", "ui/LauncherUiStateNotifier")]
+kotlin = [ROOT / f"src/com/android/launcher3/{name}.kt" for name in ("model/ModelWriter", "model/IModelWriter", "ui/LauncherUiStateNotifier", "ui/DefaultLauncherUiStateNotifier")]
 kotlin += list((HERE / "writer").glob("*Test.kt"))
 if "--baseline-consumer" in sys.argv or "--baseline-queue" in sys.argv:
     # Replay the exact coordinator-reviewed integration failure without changing the worktree.

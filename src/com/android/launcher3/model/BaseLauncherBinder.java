@@ -59,6 +59,7 @@ public class BaseLauncherBinder {
     final Callbacks[] mCallbacksList;
 
     private int mMyBindingId;
+    private WorkspaceBindingGuard.Token mBindingToken;
 
     @AssistedInject
     public BaseLauncherBinder(
@@ -88,6 +89,8 @@ public class BaseLauncherBinder {
 
             synchronized (mBgDataModel) {
                 itemsIdMap = mBgDataModel.itemsIdMap.copy();
+                mBindingToken = itemsIdMap.getBindingToken();
+                if (!mBindingToken.isCurrent()) return;
                 mBgDataModel.extraItems.forEach(extraItems::add);
                 if (incrementBindId) {
                     mBgDataModel.lastBindId++;
@@ -135,14 +138,17 @@ public class BaseLauncherBinder {
     }
 
     protected void executeCallbacksTask(CallbackTask task, Executor executor) {
+        final int bindingId = mMyBindingId;
+        final WorkspaceBindingGuard.Token token = mBindingToken;
+        if (token == null) return;
         executor.execute(() -> {
-            if (mMyBindingId != mBgDataModel.lastBindId) {
+            if (bindingId != mBgDataModel.lastBindId) {
                 Log.d(TAG, "Too many consecutive reloads, skipping obsolete data-bind");
                 return;
             }
-            for (Callbacks cb : mCallbacksList) {
-                task.execute(cb);
-            }
+            token.runIfCurrent(() -> {
+                for (Callbacks cb : mCallbacksList) task.execute(cb);
+            });
         });
     }
 

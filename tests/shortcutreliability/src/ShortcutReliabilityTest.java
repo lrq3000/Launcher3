@@ -25,5 +25,6 @@ public final class ShortcutReliabilityTest {
         AvailabilityStoreTest.run(java.nio.file.Path.of(args[0]));
         ModelBoundaryTest.run(java.nio.file.Path.of(args[0]));
         ReviewRegressionTest.runAll(java.nio.file.Path.of(args[0]));
+        BindingReceiptTest.run(java.nio.file.Path.of(args[0]));
     }
 }

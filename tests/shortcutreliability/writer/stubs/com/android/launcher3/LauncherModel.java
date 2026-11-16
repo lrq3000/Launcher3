@@ -7,6 +7,8 @@ public class LauncherModel {
     public ModelTaskController controller;
     public BgDataModel data;
     public boolean loaded = true;
+    public java.util.List<BgDataModel.Callbacks> getCallbacks() { return java.util.List.of(); }
+    public void rebindCallbacks(String reason) {}
     public LauncherModel(ModelDbController db) { this.db = db; }
     public ModelDbController getModelDbController() { return db; }
     public WorkspaceAvailability getWorkspaceAvailability() { return new WorkspaceAvailability(); }

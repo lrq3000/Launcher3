@@ -27,6 +27,7 @@ sources += [ROOT / "src/com/android/launcher3/model/tasks/PackageUpdatedTask.jav
 store = ROOT / "src/com/android/launcher3/model/availability/WorkspaceAvailabilityStore.java"
 if store.exists():
     sources.append(store)
+sources.append(ROOT / "src/com/android/launcher3/model/WorkspaceBindingGuard.java")
 KOTLIN_HOME = Path(os.environ.get("KOTLIN_HOME", "C:/Program Files/Android/Android Studio/plugins/Kotlin/kotlinc"))
 classpath = os.pathsep.join([str(OUT), str(KOTLIN_HOME / "lib/kotlin-stdlib.jar")])
 kotlin = [ROOT / "src/com/android/launcher3/model/WorkspaceAvailability.kt",
@@ -58,4 +59,5 @@ syntax = sorted({str(ROOT / name) for name in changed + untracked if name.endswi
 subprocess.run([str(JAVA_HOME / "bin/java"), "-cp", compiler_cp, "KotlinSyntaxCheck", *syntax], check=True)
 if "--finding" not in sys.argv:
     subprocess.run([sys.executable, str(HERE / "run_writer_tests.py")], check=True)
+    subprocess.run([sys.executable, str(HERE / "run_binding_tests.py")], check=True)
 print(f"Generated classes and test stores retained at {OUT}")

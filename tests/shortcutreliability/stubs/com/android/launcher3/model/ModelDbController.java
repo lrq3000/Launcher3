@@ -7,6 +7,7 @@ public class ModelDbController {
     public String identity = "database-one";
     public boolean queriesAllowed = true;
     public boolean failSnapshots;
+    public Runnable beforeSnapshot = () -> {};
     public boolean identityAvailable = true;
     public final Map<Integer, String> births = new HashMap<>();
     public com.android.launcher3.model.availability.WorkspaceAvailabilityStore.Row getAvailabilityRow(
@@ -25,6 +26,7 @@ public class ModelDbController {
         return identity;
     }
     public Cursor query(String[] columns, String selection, String[] args, String sortOrder) {
+        beforeSnapshot.run();
         if (failSnapshots) throw new IllegalStateException("Transient favorites query failure");
         if (!selection.equals("itemType=? AND restored=0") || !Arrays.equals(args, new String[] {"0"})) {
             throw new AssertionError("Incorrect favorites snapshot selection");
