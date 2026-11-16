@@ -65,6 +65,16 @@ constructor(
         target: DatabaseHelper,
         source: SQLiteDatabase,
         modelDelegate: ModelDelegate,
+    ) = com.android.launcher3.model.availability.WorkspaceAvailabilityDb.store(context).beginOperation().use {
+        migrateGridLocked(srcDeviceState, destDeviceState, target, source, modelDelegate)
+    }
+
+    private fun migrateGridLocked(
+        srcDeviceState: DeviceGridState,
+        destDeviceState: DeviceGridState,
+        target: DatabaseHelper,
+        source: SQLiteDatabase,
+        modelDelegate: ModelDelegate,
     ) {
 
         if (!GridSizeMigrationDBController.needsToMigrate(srcDeviceState, destDeviceState)) {

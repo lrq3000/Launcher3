@@ -47,8 +47,9 @@ constructor(
 
     /** Schedules a {@param task} to be executed on the current callbacks. */
     fun scheduleCallbackTask(task: CallbackTask) {
+        val token = synchronized(dataModel) { dataModel.itemsIdMap.bindingToken }
         for (cb in model.callbacks) {
-            uiExecutor.execute { task.execute(cb) }
+            uiExecutor.execute { token.runIfCurrent { task.execute(cb) } }
         }
     }
 

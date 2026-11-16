@@ -255,6 +255,12 @@ public class AllAppsList {
     /** Add and remove icons for this package which has been updated. */
     public List<LauncherActivityInfo> updatePackage(
             Context context, String packageName, UserHandle user) {
+        return updatePackage(context, packageName, user, java.util.Collections.emptySet());
+    }
+
+    /** Keep saved-target cache entries while updating the app drawer from an incomplete activity list. */
+    public List<LauncherActivityInfo> updatePackage(Context context, String packageName,
+            UserHandle user, java.util.Set<ComponentName> protectedTargets) {
         final ApiWrapper apiWrapper = ApiWrapper.INSTANCE.get(context);
         final UserCache userCache = UserCache.getInstance(context);
         final PackageManagerHelper pmHelper = PackageManagerHelper.INSTANCE.get(context);
@@ -275,7 +281,7 @@ public class AllAppsList {
                 LauncherActivityInfo lai = activityMap.remove(cn);
                 if (lai == null) {
                     // Remove any component which is no longer in the list
-                    mIconCache.remove(cn, user);
+                    if (!protectedTargets.contains(cn)) mIconCache.remove(cn, user);
                     iterator.remove();
                     if (DEBUG) {
                         Log.w(TAG, "updatePackage: removing unavailable component, cn=" + cn

@@ -40,11 +40,14 @@ import com.android.launcher3.model.ModelInitializer
 import com.android.launcher3.model.ModelLauncherCallbacks
 import com.android.launcher3.model.ModelTaskController
 import com.android.launcher3.model.ModelWriterFactory
+import com.android.launcher3.model.WorkspaceAvailability
 import com.android.launcher3.model.data.WorkspaceItemInfo
 import com.android.launcher3.model.tasks.CacheDataUpdatedTask
+import com.android.launcher3.model.tasks.PackageUpdatedTask
 import com.android.launcher3.pm.UserCache
 import com.android.launcher3.util.DaggerSingletonTracker
 import com.android.launcher3.util.Executors.MODEL_EXECUTOR
+import com.android.launcher3.util.Executors.MAIN_EXECUTOR
 import com.android.launcher3.util.PackageUserKey
 import com.android.launcher3.views.ActivityContext
 import java.io.PrintWriter
@@ -93,7 +96,11 @@ constructor(
     // our monitoring of the package manager provides all updates and we never
     // need to do a requery. This is only ever touched from the loader thread.
     private var mModelLoaded = false
-    private var mModelDestroyed = false
+    @Volatile private var mModelDestroyed = false
+
+    val workspaceAvailability by lazy { WorkspaceAvailability(context, modelDbController) }
+    @Volatile private var mAvailabilityForeground = false
+    private var mAvailabilityRetryDelay = 2_000L
 
     fun isModelLoaded() =
         synchronized(mLock) { mModelLoaded && mLoaderTask == null && !mModelDestroyed }
@@ -112,6 +119,32 @@ constructor(
         }
     }
 
+    private val mAvailabilityValidationCheck = Runnable {
+        if (isModelLoaded()) {
+            val pending = mutableSetOf<PackageUserKey>()
+            synchronized(mBgDataModel) {
+                mBgDataModel.itemsIdMap.forEach { item ->
+                    if (item is WorkspaceItemInfo &&
+                        item.itemType == LauncherSettings.Favorites.ITEM_TYPE_APPLICATION &&
+                        item.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE != 0) {
+                        item.targetPackage?.let { pending.add(PackageUserKey(it, item.user)) }
+                    }
+                }
+            }
+            val controller = taskControllerProvider.get()
+            pending.forEach {
+                PackageUpdatedTask(PackageUpdatedTask.OP_UPDATE, it.mUser, it.mPackageName)
+                    .execute(controller, mBgDataModel, mBgAllAppsList)
+            }
+            if (pending.isNotEmpty() && mAvailabilityForeground) scheduleAvailabilityRetry()
+        }
+    }
+
+    private fun scheduleAvailabilityRetry() {
+        MODEL_EXECUTOR.handler.postDelayed(mAvailabilityValidationCheck, mAvailabilityRetryDelay)
+        mAvailabilityRetryDelay = (mAvailabilityRetryDelay * 2).coerceAtMost(60_000L)
+    }
+
     init {
         if (!dbFileName.isNullOrEmpty()) {
             initializer.initialize(this)
@@ -121,7 +154,20 @@ constructor(
         lifecycle.addCloseable(dumpManager.register(this))
     }
 
-    fun newModelCallbacks() = ModelLauncherCallbacks(this::enqueueModelUpdateTask)
+    fun newModelCallbacks() =
+        ModelLauncherCallbacks(this::enqueueModelUpdateTask, workspaceAvailability, availabilityChanged = {
+            // Temporary availability callbacks are journaled off the model thread. Preserve loaded item identity; confirmed uninstall has a separate receipt/replacement path below.
+            synchronized(mLock) {
+                if (mLoaderTask != null) forceReload("package-availability-event")
+            }
+        }, removalReceived = {
+            // Invalidate before journal queries or acquiring model/SQL locks, even when UI inflation is already queued and the loader has finished.
+            mBgDataModel.bindingGuard.beginRemoval()
+        }, removalRecorded = {
+            mBgDataModel.bindingGuard.finishRemoval()
+            // Cancelling the old generation also cancels healthy pending pages. Always arrange their replacement from reconciled favorites, not merely an in-flight-loader restart.
+            forceReload("confirmed-package-removal")
+        })
 
     fun getWriter(
         verifyChanges: Boolean,
@@ -133,6 +179,9 @@ constructor(
     /** Called when the model is destroyed */
     fun destroy() {
         mModelDestroyed = true
+        mAvailabilityForeground = false
+        MODEL_EXECUTOR.handler.removeCallbacks(mAvailabilityValidationCheck)
+        MODEL_EXECUTOR.handler.removeCallbacks(mDataValidationCheck)
         MODEL_EXECUTOR.execute { modelDelegate.destroy() }
     }
 
@@ -224,8 +273,12 @@ constructor(
                 launcherBinder.bindAllApps()
                 launcherBinder.bindWidgets()
 
-                if (Flags.simplifiedLauncherModelBinding())
-                    installQueue.resumeModelPush(ItemInstallQueue.FLAG_LOADER_RUNNING)
+                if (Flags.simplifiedLauncherModelBinding()) {
+                    val token = mBgDataModel.itemsIdMap.bindingToken
+                    MAIN_EXECUTOR.execute {
+                        token.runIfCurrent { installQueue.resumeModelPush(ItemInstallQueue.FLAG_LOADER_RUNNING) }
+                    }
+                }
                 return CompletableFuture.completedFuture(Unit)
             } else {
                 val task = loaderFactory.newLoaderTask(callerName, launcherBinder)
@@ -250,7 +303,7 @@ constructor(
      *
      * @return true if the model is loaded or if loader task is running.
      */
-    fun isActive(): Boolean = mModelLoaded || mLoaderTask != null
+    fun isActive(): Boolean = synchronized(mLock) { mModelLoaded || mLoaderTask != null }
 
     inner class LoaderTransaction(task: LoaderTask) : AutoCloseable {
         private var mTask: LoaderTask? = null
@@ -268,15 +321,20 @@ constructor(
         }
 
         fun commit() {
-            synchronized(mLock) {
+            val token = mTask?.bindingToken ?: return
+            val committed = synchronized(mLock) {
                 // Everything loaded bind the data.
-                if (mLoaderTask === mTask) {
+                if (mLoaderTask === mTask && token.isCurrent) {
                     mModelLoaded = true
                     mIsCommitted = true
+                    true
+                } else false
+            }
+            if (committed && Flags.simplifiedLauncherModelBinding()) {
+                MAIN_EXECUTOR.execute {
+                    token.runIfCurrent { installQueue.resumeModelPush(ItemInstallQueue.FLAG_LOADER_RUNNING) }
                 }
             }
-            if (Flags.simplifiedLauncherModelBinding())
-                installQueue.resumeModelPush(ItemInstallQueue.FLAG_LOADER_RUNNING)
         }
 
         override fun close() {
@@ -305,8 +363,22 @@ constructor(
      * [UserCache]
      */
     fun validateModelDataOnResume() {
+        mAvailabilityForeground = true
         MODEL_EXECUTOR.handler.removeCallbacks(mDataValidationCheck)
         MODEL_EXECUTOR.post(mDataValidationCheck)
+        revalidateUnavailableWorkspaceItems()
+    }
+
+    /** Coalesced worker-only checks on foreground entry, storage events, and unavailable-item taps. A failed check never expires a protected row. */
+    fun revalidateUnavailableWorkspaceItems() {
+        if (mModelDestroyed) return
+        MODEL_EXECUTOR.handler.removeCallbacks(mAvailabilityValidationCheck)
+        MODEL_EXECUTOR.post(mAvailabilityValidationCheck)
+    }
+
+    fun onWorkspaceBackgrounded() {
+        mAvailabilityForeground = false
+        MODEL_EXECUTOR.handler.removeCallbacks(mAvailabilityValidationCheck)
     }
 
     /** Called when the icons for packages have been updated in the icon cache. */

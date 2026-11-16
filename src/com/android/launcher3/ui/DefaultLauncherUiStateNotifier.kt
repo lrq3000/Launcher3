@@ -47,34 +47,40 @@ class DefaultLauncherUiStateNotifier(
     }
 
     override fun notifyItemModifiedOptimistically(item: ItemInfo) {
+        val token = synchronized(bgDataModel) { bgDataModel.itemsIdMap.bindingToken }
         uiExecutor.execute {
-            for (cb in callbacks) {
-                cb.bindItemsUpdated(Collections.singleton(item))
+            token.runIfCurrent {
+                for (cb in callbacks) {
+                    cb.bindItemsUpdated(Collections.singleton(item))
+                }
             }
         }
     }
 
     override fun notifyModelChanged(changeLog: IModelWriter.ChangeLog, owner: Callbacks?) {
         val startId = bgDataModel.lastBindId
+        val token = synchronized(bgDataModel) { bgDataModel.itemsIdMap.bindingToken }
         uiExecutor.execute {
-            val allCallbacks = callbacks + model.callbacks
-            if (changeLog.itemsAdded.isNotEmpty()) {
-                allCallbacks
-                    .filter { it != owner }
-                    .forEach { it.bindItemsAdded(changeLog.itemsAdded) }
+            token.runIfCurrent {
+                val allCallbacks = callbacks + model.callbacks
+                if (changeLog.itemsAdded.isNotEmpty()) {
+                    allCallbacks
+                        .filter { it != owner }
+                        .forEach { it.bindItemsAdded(changeLog.itemsAdded) }
+                }
+                if (changeLog.itemsModified.isNotEmpty()) {
+                    allCallbacks
+                        .filter { it != owner }
+                        .forEach { it.bindItemsUpdated(changeLog.itemsModified) }
+                }
+                if (changeLog.itemsRemoved.isNotEmpty()) {
+                    val matcher = ItemInfoMatcher.ofItems(changeLog.itemsRemoved)
+                    allCallbacks
+                        .filter { it != owner }
+                        .forEach { it.bindWorkspaceComponentsRemoved(matcher) }
+                }
+                verifyUiConsistency(startId)
             }
-            if (changeLog.itemsModified.isNotEmpty()) {
-                allCallbacks
-                    .filter { it != owner }
-                    .forEach { it.bindItemsUpdated(changeLog.itemsModified) }
-            }
-            if (changeLog.itemsRemoved.isNotEmpty()) {
-                val matcher = ItemInfoMatcher.ofItems(changeLog.itemsRemoved)
-                allCallbacks
-                    .filter { it != owner }
-                    .forEach { it.bindWorkspaceComponentsRemoved(matcher) }
-            }
-            verifyUiConsistency(startId)
         }
     }
 

@@ -134,7 +134,10 @@ object GridSizeMigrationDBController {
                 newId = helper.generateNewItemId()
             } while (idsInUse.contains(newId))
             values.put(LauncherSettings.Favorites._ID, newId)
-            helper.writableDatabase.insert(destTableName, null, values)
+            val birth = com.android.launcher3.model.availability.WorkspaceAvailabilityDb.generation(
+                helper.writableDatabase, srcTableName, entry?.id ?: id,
+            )
+            helper.insertMigrated(helper.writableDatabase, destTableName, values, birth)
         }
         c.close()
         return newId

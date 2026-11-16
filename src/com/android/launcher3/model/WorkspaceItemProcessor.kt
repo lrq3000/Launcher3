@@ -91,7 +91,7 @@ class WorkspaceItemProcessor(
     private val iconCache: IconCache,
     private val isSafeMode: Boolean,
     private val installingPkgs: HashMap<PackageUserKey, PackageInstaller.SessionInfo>,
-    private val isSdCardReady: Boolean,
+    private val isBootCompleted: Boolean,
     private val widgetInflater: WidgetInflater,
     private val pmHelper: PackageManagerHelper,
     private val iconRequestInfos: MutableList<IconRequestInfo<WorkspaceItemInfo>>,
@@ -118,7 +118,8 @@ class WorkspaceItemProcessor(
     fun processItem() {
         try {
             when (c.itemType) {
-                Favorites.ITEM_TYPE_APPLICATION,
+                Favorites.ITEM_TYPE_APPLICATION ->
+                    c.workspaceAvailability.beginOperation().use { processAppOrDeepShortcut() }
                 Favorites.ITEM_TYPE_DEEP_SHORTCUT -> processAppOrDeepShortcut()
                 Favorites.ITEM_TYPE_FOLDER,
                 Favorites.ITEM_TYPE_APP_GROUP -> processFolderOrAppPair()
@@ -176,6 +177,17 @@ class WorkspaceItemProcessor(
         }
         val appInfoWrapper = ApplicationInfoWrapper(context, targetPkg, c.user)
         var validTarget = launcherApps.isPackageEnabled(targetPkg, c.user)
+        val availability = c.workspaceAvailability
+        val ordinaryApp =
+            c.itemType == Favorites.ITEM_TYPE_APPLICATION && c.restoreFlag == 0 && cn != null
+        val savedRow = if (ordinaryApp) availability.row(c.id, c.serialNumber, cn!!) else null
+        val recoveringTarget = ordinaryApp && availability.isRecovering(savedRow)
+        if (ordinaryApp) availability.rememberStorage(savedRow, appInfoWrapper.getInfo())
+        if (ordinaryApp && availability.isRemoved(savedRow)) {
+            c.markDeleted("Confirmed package removal for item id=${c.id}", RestoreError.APP_NOT_INSTALLED_EXTERNAL_MEDIA)
+            return
+        }
+        var preservingTarget = false
 
         // If it's a deep shortcut, we'll use pinned shortcuts to restore it
         if (cn != null && validTarget && (c.itemType != Favorites.ITEM_TYPE_DEEP_SHORTCUT)) {
@@ -192,6 +204,13 @@ class WorkspaceItemProcessor(
             if (isActivityEnabled) {
                 // no special handling necessary for this item
                 c.markRestored()
+            } else if (ordinaryApp && availability.shouldPreserve(savedRow)) {
+                // A different activity is not recovery of the saved component. Keep the intent and occupied cell until this exact activity resolves.
+                preservingTarget = true
+                allowMissingTarget = true
+                validTarget = false
+                disabledState = disabledState or WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE
+                availability.protect(savedRow)
             } else {
                 // Gracefully try to find a fallback activity.
                 FileLog.d(
@@ -223,7 +242,7 @@ class WorkspaceItemProcessor(
                 }
             }
         }
-        if (intent.`package` == null) {
+        if (intent.`package` == null && !ordinaryApp) {
             intent.`package` = targetPkg
         }
 
@@ -272,20 +291,36 @@ class WorkspaceItemProcessor(
                             }
                         }
                     }
+                    ordinaryApp && (preservingTarget || availability.shouldPreserve(savedRow)) -> {
+                        preservingTarget = true
+                        disabledState = disabledState or WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE
+                        allowMissingTarget = true
+                        pendingPackages.add(PackageUserKey(targetPkg, c.user))
+                        availability.protect(savedRow)
+                    }
                     appInfoWrapper.isOnSdCard() -> {
                         // Package is present but not available.
                         disabledState =
                             disabledState or WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE
                         // Add the icon on the workspace anyway.
                         allowMissingTarget = true
+                        if (ordinaryApp) {
+                            preservingTarget = true
+                            availability.protect(savedRow)
+                        }
                     }
-                    !isSdCardReady -> {
+                    !isBootCompleted -> {
                         // SdCard is not ready yet. Package might get available,
                         // once it is ready.
                         Log.d(TAG, "Missing package, will check later: $targetPkg")
                         pendingPackages.add(PackageUserKey(targetPkg, c.user))
                         // Add the icon on the workspace anyway.
                         allowMissingTarget = true
+                        if (ordinaryApp) {
+                            preservingTarget = true
+                            disabledState = disabledState or WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE
+                            availability.protect(savedRow)
+                        }
                     }
                     else -> {
                         // Do not wait for external media load anymore.
@@ -315,7 +350,7 @@ class WorkspaceItemProcessor(
             // or something which is ready to be used)
             c.markRestored()
         }
-        val useLowResIcon = !c.isOnWorkspaceOrHotseat
+        val useLowResIcon = !c.isOnWorkspaceOrHotseat && !ordinaryApp
         val info: WorkspaceItemInfo?
         when {
             c.restoreFlag != 0 -> {
@@ -323,7 +358,12 @@ class WorkspaceItemProcessor(
                 info = c.getRestoredItemInfo(intent, isPreArchivedShortcut)
             }
             c.itemType == Favorites.ITEM_TYPE_APPLICATION ->
-                info = c.getAppShortcutInfo(intent, allowMissingTarget, useLowResIcon, false)
+                info = c.getAppShortcutInfo(
+                    intent,
+                    allowMissingTarget || (ordinaryApp && availability.shouldPreserve(savedRow)),
+                    useLowResIcon,
+                    false,
+                )
             c.itemType == Favorites.ITEM_TYPE_DEEP_SHORTCUT -> {
                 val key = ShortcutKey.fromIntent(intent, c.user)
                 if (unlockedUsers[c.serialNumber]) {
@@ -389,12 +429,21 @@ class WorkspaceItemProcessor(
             }
         }
         if (info != null) {
-            if (info.itemType != Favorites.ITEM_TYPE_DEEP_SHORTCUT) {
+            if (ordinaryApp && c.launcherActivityInfo == null && availability.shouldPreserve(savedRow)) {
+                preservingTarget = true
+                disabledState = disabledState or WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE
+                availability.protect(savedRow)
+            }
+            val keepRecoveredAppearance =
+                recoveringTarget && c.launcherActivityInfo != null &&
+                    !iconCache.isDefaultIcon(info.bitmap, info.user)
+            if (info.itemType != Favorites.ITEM_TYPE_DEEP_SHORTCUT && !preservingTarget && !keepRecoveredAppearance) {
                 // Skip deep shortcuts; their title and icons have already been
                 // loaded above.
                 iconRequestInfos.add(c.createIconRequestInfo(info, useLowResIcon))
             }
             c.applyCommonProperties(info)
+            if (ordinaryApp) info.availabilityGeneration = savedRow?.generation ?: ""
             info.intent = intent
             info.rank = c.rank
             info.spanX = 1
@@ -413,6 +462,9 @@ class WorkspaceItemProcessor(
                 info.runtimeStatusFlags = info.runtimeStatusFlags and FLAG_AUTOMATED.inv()
             }
             val activityInfo = c.launcherActivityInfo
+            if (ordinaryApp && activityInfo != null && activityInfo.componentName == cn && !preservingTarget) {
+                availability.observe(savedRow, activityInfo)
+            }
             if (activityInfo != null) {
                 AppInfo.updateRuntimeFlagsForActivityTarget(
                     info,
@@ -716,6 +768,7 @@ class WorkspaceItemProcessor(
                 info.rank = rank
                 if (
                     info is WorkspaceItemInfo &&
+                        info.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE == 0 &&
                         info.matchingLookupFlag.isVisuallyLessThan(Favorites.DESKTOP_ICON_FLAG) &&
                         info.itemType == Favorites.ITEM_TYPE_APPLICATION &&
                         verifiers.any { it.isItemInPreview(info.rank) }
@@ -734,9 +787,11 @@ class WorkspaceItemProcessor(
      *    contents
      * 3) Committing any persistent modifications and deletions to the storage
      */
+    @JvmOverloads
     fun finalizeData(
         delegate: ModelDelegate,
         modelDbController: ModelDbController,
+        packageRowsRemoved: Boolean = false,
     ): IntSparseArrayMap<ItemInfo> {
         delegate.loadAndAddExtraModelItems(loadedItems)
 
@@ -748,7 +803,7 @@ class WorkspaceItemProcessor(
         // requests high-res icons for the items that are part of an app pair.
         loadedItems.forEach { if (it is AppPairInfo) it.fetchHiResIconsIfNeeded(iconCache) }
         c.commitRestoredItems()
-        if (itemsDeleted) {
+        if (itemsDeleted || packageRowsRemoved) {
             // Remove any empty folder
             modelDbController.deleteItemsBasedOnItemIdQuery(EMPTY_FOLDER_QUERY)
         }

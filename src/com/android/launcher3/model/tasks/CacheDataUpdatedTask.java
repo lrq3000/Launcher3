@@ -69,6 +69,7 @@ public class CacheDataUpdatedTask implements ModelUpdateTask {
                     si -> {
                         ComponentName cn = si.getTargetComponent();
                         if (si.itemType == LauncherSettings.Favorites.ITEM_TYPE_APPLICATION
+                                && (si.runtimeStatusFlags & WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) == 0
                                 && isValidShortcut(si) && cn != null
                                 && mPackages.contains(cn.getPackageName())) {
                             iconCache.getTitleAndIcon(si, si.getMatchingLookupFlag());

@@ -98,6 +98,9 @@ constructor(
     var launcherActivityInfo: LauncherActivityInfo? = null
         private set
 
+    val workspaceAvailability: WorkspaceAvailability
+        get() = model.workspaceAvailability
+
     override fun moveToNext(): Boolean {
         val result = super.moveToNext()
         if (result) {
@@ -144,7 +147,7 @@ constructor(
     ): IconRequestInfo<WorkspaceItemInfo> {
         val iconBlob =
             if (
-                itemType == ITEM_TYPE_DEEP_SHORTCUT ||
+                itemType == ITEM_TYPE_APPLICATION || itemType == ITEM_TYPE_DEEP_SHORTCUT ||
                     restoreFlag != 0 ||
                     (wai.isInactiveArchive && Flags.restoreArchivedAppIconsFromDb())
             )
@@ -215,6 +218,7 @@ constructor(
         newIntent.setComponent(componentName)
         launcherActivityInfo =
             context.getSystemService(LauncherApps::class.java).resolveActivity(newIntent, user)
+                ?.takeIf { it.componentName == componentName }
         if ((launcherActivityInfo == null) && !allowMissingTarget) {
             Log.d(TAG, "Missing activity found in getShortcutInfo: $componentName")
             return null
@@ -234,7 +238,20 @@ constructor(
                 automationRepo,
             )
         }
-        loadWorkspaceTitleAndIcon(useLowResIcon, loadIcon, info)
+        val recovering = workspaceAvailability.isRecovering(workspaceAvailability.row(id, serialNumber, componentName))
+        if ((launcherActivityInfo == null && allowMissingTarget) || recovering) {
+            // Favorites owns the last valid appearance, including folder children whose in-memory cache may only be low resolution. Do not replace it with a package-level fallback during recovery.
+            val savedTitle = title?.takeIf { it.isNotEmpty() } ?: componentName.className
+            if (!loadIconFromDb(info)) {
+                iconCache.getTitleAndIcon(info, CacheLookupFlag.DEFAULT_LOOKUP_FLAG)
+            }
+            info.title = savedTitle
+            if (launcherActivityInfo == null) {
+                info.runtimeStatusFlags = info.runtimeStatusFlags or ItemInfoWithIcon.FLAG_DISABLED_NOT_AVAILABLE
+            }
+        } else {
+            loadWorkspaceTitleAndIcon(useLowResIcon, loadIcon, info)
+        }
         // from the db
         if (info.title.isNullOrEmpty()) {
             if (loadIcon) {

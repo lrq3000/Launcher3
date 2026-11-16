@@ -34,6 +34,7 @@ import com.android.launcher3.util.ModelTestExtensions.setModelLayout
 import com.android.launcher3.util.SandboxApplication
 import com.android.launcher3.util.TestActivityContext
 import com.android.launcher3.util.TestUtil
+import com.android.launcher3.util.PersistedItemArray
 import com.google.common.truth.Truth.assertThat
 import org.junit.Rule
 import org.junit.Test
@@ -52,6 +53,26 @@ class ItemInstallQueueTest {
 
     val installQueue: ItemInstallQueue
         get() = app.appComponent.itemInstallQueue
+
+    @Test
+    fun failedBirthReservationRetainsInstallRequestUntilResumeAfterRepair() {
+        app.setEmptyModelLayout()
+        val blocked = java.io.File(app.noBackupFilesDir, "workspace-availability-v1.new")
+        assertThat(blocked.mkdir()).isTrue()
+        installQueue.queueItem(SerializedItemItem(TEST_PACKAGE, myUserHandle()))
+        awaitTaskCompletion()
+        assertThat(findAllIcons(TEST_PACKAGE)).isEmpty()
+        TestUtil.runOnExecutorSync(MODEL_EXECUTOR) {
+            assertThat(app.appComponent.testableModelState.dbController.query(null, null, null, null).use { it.count }).isEqualTo(0)
+            assertThat(PersistedItemArray<SerializedItemItem>("apps_to_install").read(app, ::SerializedItemItem)).hasSize(1)
+        }
+        assertThat(blocked.renameTo(java.io.File(app.noBackupFilesDir, "retained-queue-blocker"))).isTrue()
+        awaitTaskCompletion()
+        assertThat(findAllIcons(TEST_PACKAGE)).hasSize(1)
+        TestUtil.runOnExecutorSync(MODEL_EXECUTOR) {
+            assertThat(PersistedItemArray<SerializedItemItem>("apps_to_install").read(app, ::SerializedItemItem)).isEmpty()
+        }
+    }
 
     @Test
     fun adds_icon_to_workspace() {

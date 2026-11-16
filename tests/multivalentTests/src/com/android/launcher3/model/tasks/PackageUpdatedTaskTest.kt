@@ -132,6 +132,46 @@ class PackageUpdatedTaskTest {
         }
 
     @Test
+    fun `OP_UPDATE cannot replace an unavailable saved component with another activity`() {
+        val originalIntent = expectedWorkspaceItem.intent.toUri(0)
+        expectedWorkspaceItem.runtimeStatusFlags =
+            WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE or WorkspaceItemInfo.FLAG_DISABLED_QUIET_USER
+        whenever(expectedActivityInfo.componentName)
+            .thenReturn(ComponentName(expectedPackage, "OtherActivity"))
+        modelState.dataModel.addItems(context, listOf(expectedWorkspaceItem), ModelTask)
+
+        executeTask(OP_UPDATE)
+
+        assertThat(expectedWorkspaceItem.intent.toUri(0)).isEqualTo(originalIntent)
+        assertThat(expectedWorkspaceItem.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE)
+            .isNotEqualTo(0)
+        assertThat(modelState.dataModel.itemsIdMap[expectedWorkspaceItem.id])
+            .isSameInstanceAs(expectedWorkspaceItem)
+    }
+
+    @Test
+    fun `OP_UPDATE exact target recovery preserves identity placement and independent disabled flags`() {
+        expectedWorkspaceItem.id = 77
+        expectedWorkspaceItem.cellX = 2
+        expectedWorkspaceItem.cellY = 3
+        expectedWorkspaceItem.rank = 4
+        expectedWorkspaceItem.runtimeStatusFlags =
+            WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE or WorkspaceItemInfo.FLAG_DISABLED_SUSPENDED
+        modelState.dataModel.addItems(context, listOf(expectedWorkspaceItem), ModelTask)
+
+        executeTask(OP_UPDATE)
+
+        assertThat(modelState.dataModel.itemsIdMap[77]).isSameInstanceAs(expectedWorkspaceItem)
+        assertThat(expectedWorkspaceItem.cellX).isEqualTo(2)
+        assertThat(expectedWorkspaceItem.cellY).isEqualTo(3)
+        assertThat(expectedWorkspaceItem.rank).isEqualTo(4)
+        assertThat(expectedWorkspaceItem.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE)
+            .isEqualTo(0)
+        assertThat(expectedWorkspaceItem.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_SUSPENDED)
+            .isNotEqualTo(0)
+    }
+
+    @Test
     @EnableFlags(Flags.FLAG_MODEL_REPOSITORY)
     fun `OP_ADD triggers model callbacks and adds new items to AllAppsList`() {
         modelState.dataModel.addItems(context, listOf(expectedWorkspaceItem), ModelTask)
@@ -146,7 +186,7 @@ class PackageUpdatedTaskTest {
         assertThat(widgetsUpdates).hasSize(2)
         workspaceUpdates.verifyItemUpdated()
 
-        verify(modelState.appsList).updatePackage(any(), eq(expectedPackage), eq(mUser))
+        verify(modelState.appsList).updatePackage(any(), eq(expectedPackage), eq(mUser), any())
         verify(mockTaskController).bindUpdatedWorkspaceItems(listOf(expectedWorkspaceItem))
         verify(mockTaskController).bindUpdatedWidgets(modelState.dataModel)
 
@@ -169,7 +209,7 @@ class PackageUpdatedTaskTest {
         assertThat(appUpdates).hasSize(2)
         workspaceUpdates.verifyItemUpdated()
 
-        verify(modelState.appsList).updatePackage(any(), eq(expectedPackage), eq(mUser))
+        verify(modelState.appsList).updatePackage(any(), eq(expectedPackage), eq(mUser), any())
         verify(mockTaskController).bindUpdatedWorkspaceItems(listOf(expectedWorkspaceItem))
 
         assertThat(modelState.appsList.data.firstOrNull()?.componentName)

@@ -93,15 +93,35 @@ public class PackageUpdatedTask implements ModelUpdateTask {
                     .filter(pkg -> !launcherApps.isPackageEnabled(pkg, mUser)).toList();
             if (!disabledPackages.isEmpty()) {
                 disabledPackages.forEach(mPackages::remove);
-                PackageTaskFactory.INSTANCE.appsRemoved(mUser, new HashSet<>(disabledPackages))
+                PackageTaskFactory.INSTANCE.appsRemovedByLookup(mUser, new HashSet<>(disabledPackages))
                         .execute(taskController, dataModel, appsList);
             }
         }
 
         final HashMap<String, List<LauncherActivityInfo>> activitiesLists = new HashMap<>();
         for (String packageName : mPackages) {
-            iconCache.updateIconsForPkg(packageName, mUser);
-            activitiesLists.put(packageName, appsList.updatePackage(context, packageName, mUser));
+            Set<ComponentName> protectedTargets = new HashSet<>();
+            synchronized (dataModel) {
+                dataModel.itemsIdMap.forEach(item -> {
+                    if (item instanceof WorkspaceItemInfo saved
+                            && saved.itemType == ITEM_TYPE_APPLICATION && !saved.isPromise()
+                            && mUser.equals(saved.user) && packageName.equals(saved.getTargetPackage())
+                            && taskController.getModel().getWorkspaceAvailability().shouldPreserve(saved)) {
+                        protectedTargets.add(saved.getTargetComponent());
+                    }
+                });
+            }
+            List<LauncherActivityInfo> registered = context.getSystemService(LauncherApps.class)
+                    .getActivityList(packageName, mUser);
+            Set<ComponentName> registeredTargets = new HashSet<>();
+            registered.forEach(activity -> registeredTargets.add(activity.getComponentName()));
+            boolean hasUnresolvedTarget = protectedTargets.stream().anyMatch(component ->
+                    !registeredTargets.contains(component));
+            // updateIconsForPkg deletes the entire durable package cache before rebuilding registered activities. An unresolved saved target may have its only valid icon in that cache, not in favorites.
+            if (!hasUnresolvedTarget) iconCache.updateIconsForPkg(packageName, mUser);
+            // Keep healthy-package refresh before app-drawer binding, as in the normal update policy. The extra query above is deliberately read-only and cannot evict a saved target.
+            activitiesLists.put(packageName, appsList.updatePackage(
+                    context, packageName, mUser, protectedTargets));
         }
 
         taskController.bindApplicationsIfNeeded();
@@ -164,6 +184,14 @@ public class PackageUpdatedTask implements ModelUpdateTask {
                             .orElse(null);
 
                     if (activityInfo == null) {
+                        if (!itemInfo.isPromise()
+                                && taskController.getModel().getWorkspaceAvailability()
+                                        .shouldPreserve(itemInfo)) {
+                            // Package availability and another launcher activity are not proof that the saved component is usable. Keep the same row, intent and appearance.
+                            taskController.getModel().getWorkspaceAvailability().protect(itemInfo);
+                            itemInfo.runtimeStatusFlags |= FLAG_DISABLED_NOT_AVAILABLE;
+                            return true;
+                        }
                         if (!activityList.isEmpty()) {
                             // First activity is considered the default activity,
                             // similar to PackageManagerHelper.getAppLaunchInfo
@@ -179,7 +207,12 @@ public class PackageUpdatedTask implements ModelUpdateTask {
 
                     // Restore if it's a promise icon
                     itemInfo.status = WorkspaceItemInfo.DEFAULT;
+                    final boolean recovering = (itemInfo.runtimeStatusFlags
+                            & FLAG_DISABLED_NOT_AVAILABLE) != 0;
                     itemInfo.runtimeStatusFlags &= ~FLAG_DISABLED_NOT_AVAILABLE;
+                    // AppInfo recalculates several unrelated disabled flags. Recovery only owns NOT_AVAILABLE; retain independently established restrictions.
+                    final int independentDisabledFlags = recovering ? itemInfo.runtimeStatusFlags
+                            & (WorkspaceItemInfo.FLAG_DISABLED_MASK & ~FLAG_DISABLED_NOT_AVAILABLE) : 0;
                     AppInfo.updateRuntimeFlagsForActivityTarget(
                             itemInfo, activityInfo,
                             UserCache.INSTANCE.get(context).getUserInfo(mUser),
@@ -187,7 +220,16 @@ public class PackageUpdatedTask implements ModelUpdateTask {
                             PackageManagerHelper.INSTANCE.get(context),
                             AutomationRepository.INSTANCE.get(context)
                     );
-                    iconCache.getTitleAndIcon(itemInfo, itemInfo.getMatchingLookupFlag());
+                    itemInfo.runtimeStatusFlags |= independentDisabledFlags;
+                    taskController.getModel().getWorkspaceAvailability().observe(itemInfo, activityInfo);
+                    // Resolving the component does not invalidate a user-visible cached icon or label. In particular, do not replace custom appearance while completing storage recovery.
+                    if (!recovering || iconCache.isDefaultIcon(itemInfo.bitmap, itemInfo.user)) {
+                        CharSequence savedTitle = itemInfo.title;
+                        iconCache.getTitleAndIcon(itemInfo, itemInfo.getMatchingLookupFlag());
+                        if (recovering && savedTitle != null && savedTitle.length() > 0) {
+                            itemInfo.title = savedTitle;
+                        }
+                    }
 
                     if (itemInfo.id != ItemInfo.NO_ID) {
                         taskController.getModelWriter().updateItemInDatabase(itemInfo);

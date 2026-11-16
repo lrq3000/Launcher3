@@ -294,9 +294,13 @@ public class DatabaseHelper extends SQLiteOpenHelper implements
      * Clears all the data for a fresh start.
      */
     public void createEmptyDB(SQLiteDatabase db) {
-        try (SQLiteTransaction t = new SQLiteTransaction(db)) {
+        try (var operation = com.android.launcher3.model.availability.WorkspaceAvailabilityDb
+                .store(mContext).beginOperation(); SQLiteTransaction t = new SQLiteTransaction(db)) {
             dropTable(db, Favorites.TABLE_NAME);
             dropTable(db, "workspaceScreens");
+            // A fresh favorites database must not inherit tombstones for old, potentially reused item IDs.
+            dropTable(db, "workspace_availability_identity");
+            dropTable(db, "workspace_availability_rows_favorites");
             onCreate(db);
             t.commit();
         }
@@ -468,7 +472,15 @@ public class DatabaseHelper extends SQLiteOpenHelper implements
         }
 
         updateMaxId(values.getAsInteger(Favorites._ID));
-        return (int) db.insert(Favorites.TABLE_NAME, null, values);
+        return (int) com.android.launcher3.model.availability.WorkspaceAvailabilityDb.insert(
+                mContext, db, Favorites.TABLE_NAME, values, SQLiteDatabase.CONFLICT_NONE, null);
+    }
+
+    /** A migration changes placement/IDs, not the historical insertion incarnation of a favorite. */
+    public long insertMigrated(SQLiteDatabase db, String table, ContentValues values, String birth) {
+        updateMaxId(values.getAsInteger(Favorites._ID));
+        return com.android.launcher3.model.availability.WorkspaceAvailabilityDb.insert(
+                mContext, db, table, values, SQLiteDatabase.CONFLICT_NONE, birth);
     }
 
     /** Updates the max ID counter to include the provided id */

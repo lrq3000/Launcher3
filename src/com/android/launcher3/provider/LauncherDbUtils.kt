@@ -44,6 +44,7 @@ import com.android.launcher3.icons.GraphicsUtils
 import com.android.launcher3.icons.GraphicsUtils.flattenBitmap
 import com.android.launcher3.icons.IconCache
 import com.android.launcher3.logging.FileLog
+import com.android.launcher3.model.availability.WorkspaceAvailabilityDb
 import com.android.launcher3.pm.PinRequestHelper
 import com.android.launcher3.pm.UserCache
 import com.android.launcher3.shortcuts.ShortcutKey
@@ -127,28 +128,23 @@ object LauncherDbUtils {
         toDb: SQLiteDatabase,
         toTable: String,
         context: Context,
-    ) {
+    ) = WorkspaceAvailabilityDb.store(context).beginOperation().use {
         val userSerial = UserCache.INSTANCE[context].getSerialNumberForUser(Process.myUserHandle())
-        dropTable(toDb, toTable)
-        LauncherSettings.Favorites.addTableToDb(toDb, userSerial, false, toTable)
-        if (fromDb != toDb) {
-            toDb.run {
-                execSQL("ATTACH DATABASE '${fromDb.path}' AS from_db")
-                execSQL(
-                    "INSERT INTO $toTable SELECT ${LauncherSettings.Favorites.getColumns(userSerial)} FROM from_db.$fromTable"
-                )
-                execSQL("DETACH DATABASE 'from_db'")
+        val attached = fromDb != toDb
+        if (attached) toDb.execSQL("ATTACH DATABASE '${fromDb.path}' AS from_db")
+        try {
+            SQLiteTransaction(toDb).use { transaction ->
+                dropTable(toDb, toTable)
+                LauncherSettings.Favorites.addTableToDb(toDb, userSerial, false, toTable)
+                val source = if (attached) "from_db.$fromTable" else fromTable
+                toDb.execSQL("INSERT INTO $toTable SELECT ${LauncherSettings.Favorites.getColumns(userSerial)} FROM $source")
+                // Birth identity is part of the same SQL commit, including interruption during a table-copy migration.
+                WorkspaceAvailabilityDb.copyBirths(context, toDb, fromTable, toDb, toTable,
+                    if (attached) "from_db" else "main")
+                transaction.commit()
             }
-        } else {
-            toDb.run {
-                execSQL(
-                    "INSERT INTO $toTable SELECT ${
-                        LauncherSettings.Favorites.getColumns(
-                            userSerial
-                        )
-                    } FROM $fromTable"
-                )
-            }
+        } finally {
+            if (attached) toDb.execSQL("DETACH DATABASE 'from_db'")
         }
     }
 
@@ -310,14 +306,28 @@ object LauncherDbUtils {
     }
 
     /** Utility class to simplify managing sqlite transactions */
-    class SQLiteTransaction(val db: SQLiteDatabase) : AutoCloseable {
+    class SQLiteTransaction @JvmOverloads constructor(
+        val db: SQLiteDatabase,
+        private val operation: AutoCloseable? = null,
+    ) : AutoCloseable {
         init {
-            db.beginTransaction()
+            try {
+                db.beginTransaction()
+            } catch (failure: Exception) {
+                operation?.close()
+                throw failure
+            }
         }
 
         fun commit() = db.setTransactionSuccessful()
 
-        override fun close() = db.endTransaction()
+        override fun close() {
+            try {
+                db.endTransaction()
+            } finally {
+                operation?.close()
+            }
+        }
     }
 
     /** Utility method to simplify iterating over cursor */

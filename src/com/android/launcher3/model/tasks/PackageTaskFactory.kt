@@ -19,9 +19,11 @@ package com.android.launcher3.model.tasks
 import android.os.UserHandle
 import android.util.Log
 import com.android.launcher3.LauncherModel.ModelUpdateTask
+import com.android.launcher3.LauncherSettings.Favorites.ITEM_TYPE_APPLICATION
 import com.android.launcher3.model.BgDataModel
 import com.android.launcher3.model.ItemInstallQueue
 import com.android.launcher3.model.ModelTaskController
+import com.android.launcher3.model.availability.WorkspaceAvailabilityStore.Row
 import com.android.launcher3.model.data.ItemInfoWithIcon.FLAG_DISABLED_NOT_AVAILABLE
 import com.android.launcher3.model.data.ItemInfoWithIcon.FLAG_DISABLED_SUSPENDED
 import com.android.launcher3.model.data.WorkspaceItemInfo
@@ -35,11 +37,39 @@ object PackageTaskFactory {
     private const val DEBUG = false
 
     /** Task to handle apps being removed */
-    fun appsRemoved(user: UserHandle, packages: Set<String>) =
+    @JvmOverloads
+    fun appsRemoved(user: UserHandle, packages: Set<String>, confirmedRows: Set<Row>? = null) =
+        removalTask(user, packages, confirmedRows, inferred = false)
+
+    /** Negative PackageManager queries are not system uninstall callbacks. */
+    fun appsRemovedByLookup(user: UserHandle, packages: Set<String>) =
+        removalTask(user, packages, null, inferred = true)
+
+    private fun removalTask(user: UserHandle, packages: Set<String>, confirmedRows: Set<Row>?, inferred: Boolean) =
         ModelUpdateTask { taskController, dataModel, apps ->
+            val availability = taskController.model.workspaceAvailability
+            val preserved = synchronized(dataModel) {
+                dataModel.itemsIdMap.filterIsInstance<WorkspaceItemInfo>().filter {
+                    it.user == user && it.targetPackage in packages && it.itemType == ITEM_TYPE_APPLICATION &&
+                        !it.isPromise && inferred && availability.shouldPreserve(it)
+                }.toSet()
+            }
+            if (preserved.isNotEmpty()) {
+                val updated = dataModel.updateAndCollectWorkspaceItemInfos(user, { item ->
+                    if (item !in preserved) false else {
+                        availability.protect(item)
+                        item.runtimeStatusFlags = item.runtimeStatusFlags or FLAG_DISABLED_NOT_AVAILABLE
+                        true
+                    }
+                })
+                taskController.bindUpdatedWorkspaceItems(updated)
+            }
+            val preservedPackages = preserved.mapNotNull { it.targetPackage }.toSet()
             packages.forEach {
                 if (DEBUG) Log.i(TAG, "appsRemoved package=$it")
-                taskController.iconCache.removeIconsForPkg(it, user)
+                if (it !in preservedPackages) {
+                    taskController.iconCache.removeIconsForPkg(it, user)
+                }
                 apps.removePackage(it, user)
             }
             taskController.bindApplicationsIfNeeded()
@@ -55,7 +85,23 @@ object PackageTaskFactory {
                     }
                 }
 
-            val removeMatch = matcher.and(ItemInfoMatcher.ofItems(forceKeepShortcuts).negate())
+            val confirmedKeys = confirmedRows?.let { rows ->
+                synchronized(dataModel) {
+                    dataModel.itemsIdMap.filterIsInstance<WorkspaceItemInfo>()
+                        .filter {
+                            if (it.itemType != ITEM_TYPE_APPLICATION || !matcher.test(it)) false else {
+                                val row = availability.row(it)
+                                row in rows || availability.isRemoved(row)
+                            }
+                        }
+                        .map { Pair(Triple(it.user, it.id, it.targetComponent), it.availabilityGeneration) }.toSet()
+                }
+            }
+            val removeMatch = matcher.and(ItemInfoMatcher.ofItems(forceKeepShortcuts + preserved).negate()).and { item ->
+                // A queued uninstall snapshot must not remove a row added for a subsequent installation. Specialized item policies remain package based.
+                item !is WorkspaceItemInfo || item.itemType != ITEM_TYPE_APPLICATION || item.isPromise ||
+                    confirmedKeys == null || Pair(Triple(item.user, item.id, item.targetComponent), item.availabilityGeneration) in confirmedKeys
+            }
             taskController.deleteAndBindComponentsRemoved(
                 removeMatch,
                 "removed because the corresponding package is removed. removedPackages=$packages",

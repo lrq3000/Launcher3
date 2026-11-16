@@ -156,6 +156,8 @@ class LoaderTaskTest {
         `when`(launcherModel.beginLoader(any())).thenReturn(transaction)
 
         `when`(launcherModel.modelDbController).thenReturn(modelDbController)
+        `when`(launcherModel.workspaceAvailability).thenReturn(WorkspaceAvailability(context, modelDbController))
+        `when`(modelDbController.getAvailabilityIdentity()).thenReturn("loader-test-database")
         doReturn(BitmapInfo.LOW_RES_INFO).whenever(iconCache).getDefaultIcon(any())
         doReturn(false).whenever(modelDbController).loadDefaultFavoritesIfNecessary()
         whenever(modelDbController.getTable()).thenReturn(mock(defaultAnswer = RETURNS_MOCKS))
@@ -235,6 +237,53 @@ class LoaderTaskTest {
             .whenever(appWidget)
             .getInstalledProvidersForPackage(widget.provider.packageName, widget.user)
         doReturn(listOf(widget)).whenever(appWidget).getInstalledProvidersForProfile(widget.user)
+    }
+
+    @Test
+    fun missingOrdinaryTargetsKeepWorkspaceDockAndFolderRows() {
+        val serial = UserCache.INSTANCE.get(context).getSerialNumberForUser(Process.myUserHandle())
+        fun insert(id: Int, container: Int, cellX: Int, type: Int = Favorites.ITEM_TYPE_APPLICATION) {
+            val values = ContentValues().apply {
+                put(Favorites._ID, id)
+                put(Favorites.PROFILE_ID, serial)
+                put(Favorites.ITEM_TYPE, type)
+                put(Favorites.RESTORED, 0)
+                put(Favorites.TITLE, "Saved $id")
+                put(Favorites.CONTAINER, container)
+                put(Favorites.SCREEN, 0)
+                put(Favorites.CELLX, cellX)
+                put(Favorites.CELLY, 0)
+                put(Favorites.SPANX, 1)
+                put(Favorites.SPANY, 1)
+                put(Favorites.RANK, 0)
+                if (type == Favorites.ITEM_TYPE_APPLICATION) {
+                    put(Favorites.INTENT, Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                        .setComponent(ComponentName("missing.sd.app", "Saved$id")).toUri(0))
+                }
+            }
+            inMemoryDb.insertOrThrow(TABLE_NAME, null, values)
+        }
+        insert(10, CONTAINER_DESKTOP, 0)
+        insert(20, CONTAINER_DESKTOP, 1, ITEM_TYPE_FOLDER)
+        insert(21, 20, 0)
+        insert(30, CONTAINER_HOTSEAT, 0)
+
+        testComponent.getLoaderTaskFactory().newLoaderTask("missing-targets", launcherBinder)
+            .runSyncOnBackgroundThread()
+
+        listOf(10, 21, 30).forEach { id ->
+            val item = bgDataModel.itemsIdMap[id] as WorkspaceItemInfo
+            assertThat(item.id).isEqualTo(id)
+            assertThat(item.title.toString()).isEqualTo("Saved $id")
+            assertThat(item.targetComponent).isEqualTo(ComponentName("missing.sd.app", "Saved$id"))
+            assertThat(item.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE).isNotEqualTo(0)
+        }
+        assertThat((bgDataModel.itemsIdMap[20] as com.android.launcher3.model.data.FolderInfo).getContents())
+            .containsExactly(bgDataModel.itemsIdMap[21])
+        inMemoryDb.query(TABLE_NAME, arrayOf(Favorites._ID), null, null, null, null, null).use {
+            assertThat(it.count).isEqualTo(4)
+        }
+        verify(launcherBinder).bindWorkspace(true, false)
     }
 
     @Test

@@ -22,6 +22,7 @@ import static com.android.launcher3.logging.StatsLogManager.LauncherEvent.LAUNCH
 import static com.android.launcher3.model.data.ItemInfoWithIcon.FLAG_DISABLED_BY_PUBLISHER;
 import static com.android.launcher3.model.data.ItemInfoWithIcon.FLAG_DISABLED_FILE_SYSTEM_NOT_READY;
 import static com.android.launcher3.model.data.ItemInfoWithIcon.FLAG_DISABLED_LOCKED_USER;
+import static com.android.launcher3.model.data.ItemInfoWithIcon.FLAG_DISABLED_NOT_AVAILABLE;
 import static com.android.launcher3.model.data.ItemInfoWithIcon.FLAG_DISABLED_QUIET_USER;
 import static com.android.launcher3.model.data.ItemInfoWithIcon.FLAG_DISABLED_SAFEMODE;
 import static com.android.launcher3.model.data.ItemInfoWithIcon.FLAG_DISABLED_SUSPENDED;
@@ -46,6 +47,7 @@ import com.android.launcher3.BuildConfig;
 import com.android.launcher3.Flags;
 import com.android.launcher3.InvariantDeviceProfile;
 import com.android.launcher3.Launcher;
+import com.android.launcher3.LauncherAppState;
 import com.android.launcher3.LauncherSettings;
 import com.android.launcher3.R;
 import com.android.launcher3.apppairs.AppPairIcon;
@@ -307,6 +309,11 @@ public class ItemClickHandler {
                     || (runtimeStatusFlags & FLAG_DISABLED_FILE_SYSTEM_NOT_READY) != 0
                     || (runtimeStatusFlags & FLAG_DISABLED_LOCKED_USER) != 0) {
                 error = R.string.shortcut_not_available;
+            } else if (shortcut.itemType == LauncherSettings.Favorites.ITEM_TYPE_APPLICATION
+                    && (runtimeStatusFlags & FLAG_DISABLED_NOT_AVAILABLE) != 0) {
+                error = R.string.app_temporarily_unavailable;
+                LauncherAppState.getInstance(context).getModel()
+                        .revalidateUnavailableWorkspaceItems();
             } else {
                 error = R.string.activity_not_available;
             }

@@ -1,0 +1,3 @@
+/* Copyright (C) 2026 The Android Open Source Project; SPDX-License-Identifier: Apache-2.0 */
+package android.content.pm;
+public class PackageInstaller { public static class SessionInfo {} }

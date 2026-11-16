@@ -1,7 +1,6 @@
 package com.android.launcher3
 
 import android.animation.AnimatorSet
-import android.os.CancellationSignal
 import android.os.Trace
 import android.util.Log
 import android.util.Pair
@@ -25,6 +24,7 @@ import com.android.launcher3.model.ItemInstallQueue
 import com.android.launcher3.model.ItemInstallQueue.FLAG_LOADER_RUNNING
 import com.android.launcher3.model.ModelUtils.currentScreenContentFilter
 import com.android.launcher3.model.StringCache
+import com.android.launcher3.model.WorkspaceBindingGuard
 import com.android.launcher3.model.data.AppInfo
 import com.android.launcher3.model.data.ItemInfo
 import com.android.launcher3.model.data.PredictedContainerInfo
@@ -58,7 +58,7 @@ import java.util.function.Predicate
 
 class ModelCallbacks(private var launcher: Launcher) : BgDataModel.Callbacks {
 
-    @VisibleForTesting var activeBindTask = AtomicReference(CancellationSignal())
+    @VisibleForTesting var activeBindTask = AtomicReference<WorkspaceBindingGuard.Session?>()
 
     var synchronouslyBoundPages = IntSet()
     var pagesToBindSynchronously = IntSet()
@@ -72,7 +72,7 @@ class ModelCallbacks(private var launcher: Launcher) : BgDataModel.Callbacks {
     val extraContainerCallbacks = SparseArray<Consumer<List<ItemInfo>>>()
 
     init {
-        launcher.closeOnDestroy { activeBindTask.get().cancel() }
+        launcher.closeOnDestroy { activeBindTask.get()?.cancel() }
     }
 
     fun bindWorkspaceDataModel() {
@@ -87,12 +87,12 @@ class ModelCallbacks(private var launcher: Launcher) : BgDataModel.Callbacks {
                 if (ev.isSource(launcher)) return@forEach
 
                 when (ev) {
-                    is AddEvent -> bindWorkspaceItemsAdded(ev.items)
+                    is AddEvent -> ev.bindingToken.runIfCurrent { bindWorkspaceItemsAdded(ev.items) }
                     is RemoveEvent -> bindWorkspaceItemsRemoved(ev.items)
-                    is UpdateEvent -> bindWorkspaceItemsUpdated(ev.items)
+                    is UpdateEvent -> ev.bindingToken.runIfCurrent { bindWorkspaceItemsUpdated(ev.items) }
                     is FullRefresh ->
                         bindModelWithAsyncInflation(
-                            itemIdMap = workspaceState.value,
+                            itemIdMap = ev.snapshot ?: workspaceState.value,
                             isBindingSync = false,
                             reason = ev.reason,
                         )
@@ -477,8 +477,7 @@ class ModelCallbacks(private var launcher: Launcher) : BgDataModel.Callbacks {
             bindModelWithAsyncInflation(itemIdMap, isBindingSync, "bindCompleteModelAsync")
             return
         }
-        val taskTracker = CancellationSignal()
-        activeBindTask.getAndSet(taskTracker).cancel()
+        val taskTracker = itemIdMap.bindingToken.start(activeBindTask) ?: return
         val inflater = launcher.itemInflater
 
         fun executeCallbacksTask(executor: Executor = MAIN_EXECUTOR, task: () -> Unit) {
@@ -486,7 +485,7 @@ class ModelCallbacks(private var launcher: Launcher) : BgDataModel.Callbacks {
                 if (taskTracker.isCanceled) {
                     Log.d(TAG, "Too many consecutive reloads, skipping obsolete data-bind")
                 } else {
-                    task.invoke()
+                    taskTracker.runIfCurrent { task.invoke() }
                 }
             }
         }
@@ -504,14 +503,14 @@ class ModelCallbacks(private var launcher: Launcher) : BgDataModel.Callbacks {
                 executeCallbacksTask(executor) { launcher.bindInflatedItems(bindItems, null) }
         }
 
-        MAIN_EXECUTOR.execute { clearPendingBinds() }
+        executeCallbacksTask { clearPendingBinds() }
 
         val orderedScreenIds = itemIdMap.collectWorkspaceScreens()
         val currentScreenIds = getPagesToBindSynchronously(orderedScreenIds)
 
         fun setupPendingBind(pendingExecutor: Executor) {
             executeCallbacksTask(pendingExecutor) { finishBindingItems(currentScreenIds) }
-            pendingExecutor.execute {
+            executeCallbacksTask(pendingExecutor) {
                 ItemInstallQueue.INSTANCE[launcher].resumeModelPush(FLAG_LOADER_RUNNING)
             }
         }
@@ -558,7 +557,7 @@ class ModelCallbacks(private var launcher: Launcher) : BgDataModel.Callbacks {
 
             // Wait for the async inflation to complete and then notify the completion
             // signal on UI thread.
-            MAIN_EXECUTOR.execute { onCompleteSignal.executeAllAndDestroy() }
+            executeCallbacksTask { onCompleteSignal.executeAllAndDestroy() }
         }
 
         // Only include the first level items on desktop (excluding folder contents) for item count
@@ -581,11 +580,20 @@ class ModelCallbacks(private var launcher: Launcher) : BgDataModel.Callbacks {
      */
     private inline fun <T, R> CompletionStage<T>.thenOn(
         executor: Executor,
-        taskTracker: CancellationSignal,
+        taskTracker: WorkspaceBindingGuard.Session,
+        delivery: Boolean = true,
         crossinline block: (T) -> List<R>,
     ) =
         this.thenApplyAsync(
-            { if (taskTracker.isCanceled) emptyList() else block.invoke(it) },
+            {
+                if (taskTracker.isCanceled) emptyList()
+                else if (!delivery) block.invoke(it)
+                else {
+                    var result = emptyList<R>()
+                    taskTracker.runIfCurrent { result = block.invoke(it) }
+                    result
+                }
+            },
             executor,
         )
 
@@ -600,9 +608,7 @@ class ModelCallbacks(private var launcher: Launcher) : BgDataModel.Callbacks {
             return
         }
 
-        val taskTracker = CancellationSignal()
-        // Cancel any previously running task and set the current as active task
-        activeBindTask.getAndSet(taskTracker).cancel()
+        val taskTracker = itemIdMap.bindingToken.start(activeBindTask) ?: return
 
         val tracer = TraceHelper.INSTANCE.beginAsyncSection("launcher-bind-$reason")
 
@@ -624,7 +630,7 @@ class ModelCallbacks(private var launcher: Launcher) : BgDataModel.Callbacks {
                 bindScreens(orderedScreenIds)
                 emptyList<Void>()
             }
-            .thenOn(if (isBindingSync) MAIN_EXECUTOR else UI_HELPER_EXECUTOR, taskTracker) {
+            .thenOn(if (isBindingSync) MAIN_EXECUTOR else UI_HELPER_EXECUTOR, taskTracker, delivery = false) {
                 // If we are binding synchronously, inflate the first items on main thread,
                 // otherwise on background thread
                 firstBindItems.map { Pair.create(it, inflater.inflateItem(it, null)) }
@@ -647,7 +653,7 @@ class ModelCallbacks(private var launcher: Launcher) : BgDataModel.Callbacks {
                 launcher.bindComplete(totalWorkspaceItems, isBindingSync)
                 emptyList<Void>()
             }
-            .thenOn(UI_HELPER_EXECUTOR, taskTracker) {
+            .thenOn(UI_HELPER_EXECUTOR, taskTracker, delivery = false) {
                 // Inflate remaining items on background thread
                 lastBindItems.map { Pair.create(it, inflater.inflateItem(it, null)) }
             }
@@ -656,9 +662,9 @@ class ModelCallbacks(private var launcher: Launcher) : BgDataModel.Callbacks {
                 launcher.bindInflatedItems(inflatedItems, null)
 
                 finishBindingItems(currentScreenIds)
-                tracer.close()
                 emptyList<Void>()
             }
+            .whenComplete { _, _ -> tracer.close() }
     }
 
     override fun bindExtraContainerItems(item: FixedContainerItems) {
